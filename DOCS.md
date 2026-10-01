@@ -88,6 +88,8 @@ A Standalone Android build (`android/`) - same real firmware core, front panel, 
 sequencer as the desktop app, no plugin wrapper. Not the tabbed editor: only Panel/Keyboard,
 Browse and Sequencer, reached from a single hamburger menu (☰), top-right.
 
+LCD colour: press and hold the panel's LCD (~0.5 s) for the colour picker, the touch equivalent of the desktop right-click.
+
 Views and navigation: **Front Panel**, **Sequencer** and **Browse patches**, switched by the button
 just left of the ☰ (it cycles through them in that order; its icon shows the current view), or picked
 directly in the ☰ menu. The switch and the ☰ look identical in every view, including inside the two

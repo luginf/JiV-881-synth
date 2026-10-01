@@ -61,7 +61,8 @@ public:
 	}
 
 	MainComponent()
-		: panelDisplay(processor, PanelSkin::Variant::kCompact),
+		: lcdMenuOwner(processor),
+		  panelDisplay(processor, PanelSkin::Variant::kCompact, &lcdMenuOwner),
 		  keyboard(processor) {
 		bringUpRoms();
 		loadPersistedState();
@@ -595,6 +596,9 @@ private:
 	View currentView = View::Keyboard;
 	bool navTop = false, navBottom = false, navLeft = false, navRight = false;
 
+	// Never shown: only there so a long press on the panel's embedded LCD can pop the colour
+	// picker (PanelSkin::lcdColorMenuOwner), exactly like a desktop right-click on the LCD.
+	LCDisplay lcdMenuOwner;
 	PanelSkin panelDisplay;
 	VirtualKeyboard keyboard;
 	std::unique_ptr<PatchBrowser> patchBrowser;

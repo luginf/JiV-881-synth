@@ -150,6 +150,12 @@ private:
 
     LCDisplay *lcdColorMenuOwner = nullptr;
 
+    // Touch has no right button: pressing and holding the embedded LCD (~0.5 s, without moving)
+    // opens the same colour/context menu a desktop right-click does (Alan's request, 2026-10-01).
+    // Each press bumps the token; mouseUp()/a drag bump it again to void a pending timer.
+    int lcdLongPressToken = 0;
+    juce::Point<float> lcdLongPressStart;
+
     // Ctrl+click latching (Alan's request, 2026-09-08 - "comme pour le D110"): a button pressed
     // with Ctrl held stays down (LCD_SendButton(...,1) sent once, never auto-released) until
     // Ctrl-clicked again, instead of the normal momentary down-on-press/up-on-release. Lets two

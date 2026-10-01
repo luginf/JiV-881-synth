@@ -506,6 +506,7 @@ void VirtualJVEditor::parentHierarchyChanged()
 // belongs to the host.
 void VirtualJVEditor::applyWindowIcon()
 {
+#if !JUCE_ANDROID   // the Android app embeds its own binary data (no logo SVG) and has no window icon
     if (processor.wrapperType != juce::AudioProcessor::wrapperType_Standalone) return;
     auto *peer = getPeer();
     if (peer == nullptr) return;
@@ -517,6 +518,7 @@ void VirtualJVEditor::applyWindowIcon()
     logo->drawWithin(g, juce::Rectangle<float>(0.0f, 0.0f, 256.0f, 256.0f),
                      juce::RectanglePlacement::centred, 1.0f);
     peer->setIcon(icon);
+#endif
 }
 
 // The app-wide right-click menu: "LCD" (colours) and, when the drawer exists, "Sequencer > Classic /

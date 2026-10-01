@@ -197,6 +197,22 @@ void PanelSkin::mouseDown(const juce::MouseEvent &e)
     int hit = hitTest(e.position);
     pressedButtonIndex = hit;
 
+    ++lcdLongPressToken; // any earlier press's pending long-press is void
+    if (hit == kHitLcd && lcdColorMenuOwner != nullptr && !e.mods.isPopupMenu())
+    {
+        lcdLongPressStart = e.position;
+        const int token = lcdLongPressToken;
+        juce::Component::SafePointer<PanelSkin> safeThis(this);
+        juce::Timer::callAfterDelay(500, [safeThis, token] {
+            if (auto *self = safeThis.getComponent())
+                if (token == self->lcdLongPressToken && self->lcdColorMenuOwner != nullptr)
+                {
+                    self->pressedButtonIndex = kHitNone;
+                    self->lcdColorMenuOwner->showColorMenu();
+                }
+        });
+    }
+
     // A real right button (not Mac Ctrl-click, which latches - see below) anywhere except the
     // three controls that use it themselves opens the owner's context menu. pressedButtonIndex
     // is cleared so mouseUp() doesn't release a button that was never pressed.
@@ -281,6 +297,8 @@ void PanelSkin::mouseDown(const juce::MouseEvent &e)
 
 void PanelSkin::mouseDrag(const juce::MouseEvent &e)
 {
+    if (e.position.getDistanceFrom(lcdLongPressStart) > 12.0f)
+        ++lcdLongPressToken; // moved: not a long-press any more
     if (pressedButtonIndex == kHitDataDial)
     {
         const float totalUp = dialDragStartY - e.position.y; // positive = dragged upward
@@ -307,6 +325,7 @@ void PanelSkin::mouseDrag(const juce::MouseEvent &e)
 
 void PanelSkin::mouseUp(const juce::MouseEvent &)
 {
+    ++lcdLongPressToken;
     if (pressedButtonIndex == kHitVolumeKnob)
     {
         if (volumeRightClickPreview && processor.loaded && processor.mcu)
