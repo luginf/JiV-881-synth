@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.."; pwd)
 BUILD_DIR="$ROOT/Builds/LinuxMakefile/build"
 
-for f in "$BUILD_DIR/jiv881" "$BUILD_DIR/jiv881.vst3" "$BUILD_DIR/jiv881.lv2"; do
+for f in "$BUILD_DIR/JiV-881" "$BUILD_DIR/JiV-881.vst3" "$BUILD_DIR/JiV-881.lv2"; do
   if [ ! -e "$f" ]; then
     echo "Missing $f - run build-linux.sh first." >&2
     exit 1
@@ -39,9 +39,9 @@ mkdir -p "$PKG_ROOT/DEBIAN" \
          "$PKG_ROOT/usr/lib/lv2" \
          "$PKG_ROOT/usr/share/applications"
 
-install -m 755 "$BUILD_DIR/jiv881" "$PKG_ROOT/usr/bin/jiv881"
-cp -r "$BUILD_DIR/jiv881.vst3" "$PKG_ROOT/usr/lib/vst3/"
-cp -r "$BUILD_DIR/jiv881.lv2" "$PKG_ROOT/usr/lib/lv2/"
+install -m 755 "$BUILD_DIR/JiV-881" "$PKG_ROOT/usr/bin/jiv881"
+cp -r "$BUILD_DIR/JiV-881.vst3" "$PKG_ROOT/usr/lib/vst3/"
+cp -r "$BUILD_DIR/JiV-881.lv2" "$PKG_ROOT/usr/lib/lv2/"
 
 cat > "$PKG_ROOT/usr/share/applications/jiv881.desktop" <<EOF
 [Desktop Entry]

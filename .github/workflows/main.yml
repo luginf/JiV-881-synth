@@ -48,9 +48,9 @@ jobs:
     - name: "zip Linux"
       run: |
            cd ./Builds/LinuxMakefile/build
-           zip -r jiv881.vst3.linux.zip jiv881.vst3
-           zip -r jiv881.lv2.linux.zip jiv881.lv2
-           cp jiv881 jiv881.linux
+           zip -r JiV-881.vst3.linux.zip JiV-881.vst3
+           zip -r JiV-881.lv2.linux.zip JiV-881.lv2
+           cp JiV-881 JiV-881.linux
            cd -
       shell: bash
     - name: Upload Artifact
@@ -58,9 +58,9 @@ jobs:
       with:
         name: jiv881-linux
         path: |
-              ./Builds/LinuxMakefile/build/jiv881.vst3.linux.zip
-              ./Builds/LinuxMakefile/build/jiv881.lv2.linux.zip
-              ./Builds/LinuxMakefile/build/jiv881.linux
+              ./Builds/LinuxMakefile/build/JiV-881.vst3.linux.zip
+              ./Builds/LinuxMakefile/build/JiV-881.lv2.linux.zip
+              ./Builds/LinuxMakefile/build/JiV-881.linux
               ./build/*.deb
   build-win:
     runs-on: windows-2022

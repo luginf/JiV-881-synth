@@ -40,6 +40,8 @@ public:
     //==============================================================================
     void resized() override;
     void parentHierarchyChanged() override;
+    // Standalone only: window/taskbar icon, see the .cpp.
+    void applyWindowIcon();
 
     uint8_t getSelectedRomIdx();
     void updateEditTabs();

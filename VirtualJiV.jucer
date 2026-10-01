@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="DSwmeO" name="virtual_jiv881" projectType="audioplug" useAppConfig="0"
-              version="1.1.1" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
+              version="1.2.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
               pluginManufacturerCode="Lgnf" pluginCode="JI81" cppLanguageStandard="17"
-              pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="Virtual JiV-881"
+              pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="JiV-881"
               pluginDesc="Virtual JiV-881" companyName="luginf" companyWebsite="https://github.com/luginf/virtual-jiv-881"
               bundleIdentifier="com.luginf.virtual_jiv881" lv2Uri="https://github.com/luginf/virtual-jiv-881/plugins/virtual_jiv881">
   <MAINGROUP id="U4zWTk" name="virtual_jiv881">
@@ -176,8 +176,8 @@
     </XCODE_IPHONE>
     <LINUX_MAKE targetFolder="Builds/LinuxMakefile" smallIcon="DiWlj3" bigIcon="DiWlj3">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="jiv881"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="jiv881" linkTimeOptimisation="1"/>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="JiV-881"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="JiV-881" linkTimeOptimisation="1"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_animation" path="./JUCE/modules"/>

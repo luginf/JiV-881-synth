@@ -88,6 +88,13 @@ A Standalone Android build (`android/`) - same real firmware core, front panel, 
 sequencer as the desktop app, no plugin wrapper. Not the tabbed editor: only Panel/Keyboard,
 Browse and Sequencer, reached from a single hamburger menu (☰), top-right.
 
+Views and navigation: **Front Panel**, **Sequencer** and **Browse patches**, switched by the button
+just left of the ☰ (it cycles through them in that order; its icon shows the current view), or picked
+directly in the ☰ menu. The switch and the ☰ look identical in every view, including inside the two
+sequencer panels' own transport rows. In portrait the sequencer's transport is stacked in larger rows
+(strip view: STOP/PLAY/REC, BPM, signature, METRO, PRECOUNT + switch + ☰; then LOOP/bar/REC mode/NEW/songs;
+then UNDO/REDO/SYNC/LOAD/SAVE; piano-roll view: two rows).
+
 Build: `cd android && ./gradlew assembleDebug` (needs the Android SDK/NDK - see
 `android/local.properties`). Install with `adb install -r
 app/build/outputs/apk/debug/app-debug.apk`.
@@ -108,6 +115,13 @@ patch, PITCH opens a slider to choose the note. Sequencer views: hamburger menu 
 On desktop (Standalone, sequencer enabled) the same submenu is on right-click on the LCD or on the
 drawer handles, and in Settings.
 
-Not yet done: no app store distribution, debug build only, verified so far only by compiling -
-real-device testing still needed (see `.claude/dev-notes/android.md` for the D-110 sibling
+Not yet done: no app store distribution (releases ship a debug-keystore-signed APK); tested on one
+real phone (see `.claude/dev-notes/android.md` for the D-110 sibling
 project's own catalogue of JUCE/Android gotchas this port leans on).
+
+## Desktop Standalone: names, icon, audio settings
+
+The Linux Standalone binary and its window title are now just **JiV-881** (the plugin bundles are
+`JiV-881.vst3` / `JiV-881.lv2`). The window and taskbar icon is the Virtual JiV logo (set on the native
+window at startup). Right-click on the panel/background: LCD colour, Sequencer view, *Reset panel
+heights* and, Standalone only, **Audio/MIDI Settings...** (the same device dialog the Settings tab embeds).

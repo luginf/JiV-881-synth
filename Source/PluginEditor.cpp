@@ -7,6 +7,14 @@
 */
 
 #include "PluginEditor.h"
+// Standalone only (the "Audio/MIDI Settings..." entry of the right-click menu reaches the
+// StandaloneFilterWindow's plugin holder) - guarded because the plugin formats compile this file
+// without juce_audio_utils' standalone wrapper being visible.
+#include <juce_core/system/juce_TargetPlatform.h>
+#if JucePlugin_Build_Standalone
+ #include <juce_audio_utils/juce_audio_utils.h>
+ #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#endif
 #include "PluginProcessor.h"
 #include "rom.h"
 #include <algorithm>
@@ -480,7 +488,35 @@ void VirtualJVEditor::parentHierarchyChanged()
         if (safeThis == nullptr) return;
         if (auto *dw = dynamic_cast<juce::DocumentWindow *>(safeThis->getTopLevelComponent()))
             if (!dw->isUsingNativeTitleBar()) dw->setUsingNativeTitleBar(true);
+        safeThis->applyWindowIcon();
+        // The native peer may be recreated or shown a little later - set the icon again once it
+        // has settled.
+        for (int delayMs : { 400, 2000 })
+            juce::Timer::callAfterDelay(delayMs, [safeThis] {
+                if (safeThis != nullptr) safeThis->applyWindowIcon();
+            });
     });
+}
+
+// The Virtual Jiv logo (Assets/VirtualJiV Logo.svg, already embedded as a resource) as the
+// Standalone window's / taskbar icon. The Projucer big/small icon settings cover Windows and
+// macOS only, and DocumentWindow::setIcon() only paints the custom title bar, so the native peer
+// gets it directly (the X11 _NET_WM_ICON property on Linux). Rendered to 256px: an icon property
+// as large as the SVG's native size would be megabytes. Standalone only: inside a DAW the window
+// belongs to the host.
+void VirtualJVEditor::applyWindowIcon()
+{
+    if (processor.wrapperType != juce::AudioProcessor::wrapperType_Standalone) return;
+    auto *peer = getPeer();
+    if (peer == nullptr) return;
+    std::unique_ptr<juce::Drawable> logo(juce::Drawable::createFromImageData(
+        BinaryData::VirtualJiV_Logo_svg, size_t(BinaryData::VirtualJiV_Logo_svgSize)));
+    if (logo == nullptr) return;
+    juce::Image icon(juce::Image::ARGB, 256, 256, true);
+    juce::Graphics g(icon);
+    logo->drawWithin(g, juce::Rectangle<float>(0.0f, 0.0f, 256.0f, 256.0f),
+                     juce::RectanglePlacement::centred, 1.0f);
+    peer->setIcon(icon);
 }
 
 // The app-wide right-click menu: "LCD" (colours) and, when the drawer exists, "Sequencer > Classic /
@@ -505,6 +541,17 @@ void VirtualJVEditor::showAppContextMenu()
     appendSequencerMenu(menu);
     menu.addSeparator();
     menu.addItem("Reset panel heights", [this] { resetPaneHeights(); });
+#if JucePlugin_Build_Standalone
+    // Audio device + MIDI inputs of the Standalone app (a DAW offers its own, so plugins skip it).
+    if (processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    {
+        menu.addSeparator();
+        menu.addItem("Audio/MIDI Settings...", [this] {
+            if (auto *win = dynamic_cast<juce::StandaloneFilterWindow *>(getTopLevelComponent()))
+                win->getPluginHolder()->showAudioSettingsDialog();
+        });
+    }
+#endif
     menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition());
 }
 

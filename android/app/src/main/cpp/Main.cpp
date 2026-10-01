@@ -22,6 +22,7 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "AppModeIcons.h"
 #include "ui/PanelSkin.h"
 #include "ui/PatchBrowser.h"
 #include "ui/widgets/VirtualKeyboard.h"
@@ -83,9 +84,13 @@ public:
 		createPatchDependentViews();
 		wireUpBrowseTestNote();
 
-		menuButton.setButtonText(juce::String::fromUTF8("\xe2\x98\xb0")); // U+2630 "hamburger"
+		// The hamburger and the mode switch are drawn in the sequencer's own button style
+		// (AppModeIcons.h) so they look the same in every view, including the two sequencer
+		// panels that carry their own copies in their transport rows (onModeButton below).
 		menuButton.onClick = [this] { showMainMenu(); };
 		addAndMakeVisible(menuButton);
+		modeButton.onClick = [this] { cycleMode(); };
+		addAndMakeVisible(modeButton);
 
 		statusLabel.setJustificationType(juce::Justification::centredRight);
 		statusLabel.setColour(juce::Label::textColourId, juce::Colours::white);
@@ -167,27 +172,30 @@ public:
 		const bool retroView = processor.getSequencerRetroMode();
 		const bool inSequencer = currentView == View::Sequencer && !retroView;
 		menuButton.setVisible(!inSequencer);
+		modeButton.setVisible(!inSequencer);
+		modeButton.setMode(currentMode());
 		statusLabel.setVisible(!inSequencer);
+		// Decided outside the strip block, so they can never linger over another view.
+		const bool inBrowse = currentView == View::Browse;
+		testNoteButton.setVisible(inBrowse);
+		holdButton.setVisible(inBrowse);
+		pitchButton.setVisible(inBrowse);
 		if (!inSequencer) {
-			auto row = area.removeFromTop(44);
-			menuButton.setBounds(row.removeFromRight(48).reduced(4));
+			// Same proportions as the sequencer's own bar-menu button (40 tall, rowWidth * 0.042 - 4
+			// wide, flush top-right) so the strip looks like the sequencer's transport in every view.
+			auto row = area.removeFromTop(40);
+			const int buttonW = juce::jmax(28, juce::roundToInt(row.getWidth() * 0.042f - 4.0f));
+			menuButton.setBounds(row.removeFromRight(buttonW));
+			modeButton.setBounds(row.removeFromRight(buttonW));
 			// NOTE / HOLD / PITCH, leftmost on this same row, only in Browse (see
 			// wireUpBrowseTestNote()) - the status text keeps whatever is left.
-			const bool inBrowse = currentView == View::Browse;
-			testNoteButton.setVisible(inBrowse);
-			holdButton.setVisible(inBrowse);
-			pitchButton.setVisible(inBrowse);
 			if (inBrowse) {
 				const int btnW = juce::jmax(64, juce::roundToInt(row.getWidth() * 0.2f));
-				testNoteButton.setBounds(row.removeFromLeft(btnW).reduced(2, 4));
-				holdButton.setBounds(row.removeFromLeft(btnW).reduced(2, 4));
-				pitchButton.setBounds(row.removeFromLeft(btnW).reduced(2, 4));
+				testNoteButton.setBounds(row.removeFromLeft(btnW).reduced(2, 0));
+				holdButton.setBounds(row.removeFromLeft(btnW).reduced(2, 0));
+				pitchButton.setBounds(row.removeFromLeft(btnW).reduced(2, 0));
 			}
-			statusLabel.setBounds(row.reduced(8, 4));
-		} else {
-			testNoteButton.setVisible(false);
-			holdButton.setVisible(false);
-			pitchButton.setVisible(false);
+			statusLabel.setBounds(row.reduced(8, 0));
 		}
 
 		panelDisplay.setVisible(currentView == View::Keyboard);
@@ -241,6 +249,8 @@ private:
 		// See buildAppMenu()'s own comment: the sequencer hides the app's own hamburger row to
 		// get its full height, so its bar-menu button becomes the only way back to it.
 		sequencerPanel->onBarMenuButtonExtra = [this](juce::PopupMenu &m) { buildAppMenu(m); };
+		sequencerPanel->onModeButton = [this] { cycleMode(); };
+		sequencerPanel->modeButtonMode = [this] { return int(currentMode()); };
 
 		// Same again for the piano-roll view (its transport row has the identical bar-menu
 		// button, fed the same app menu - which is also where it is switched back to the strip).
@@ -248,6 +258,8 @@ private:
 		sequencerGridPanel = std::make_unique<JivSequencerGridPanel>(processor);
 		addChildComponent(*sequencerGridPanel);
 		sequencerGridPanel->onBarMenuButtonExtra = [this](juce::PopupMenu &m) { buildAppMenu(m); };
+		sequencerGridPanel->onModeButton = [this] { cycleMode(); };
+		sequencerGridPanel->modeButtonMode = [this] { return int(currentMode()); };
 
 		if (sequencerRetroPanel) removeChildComponent(sequencerRetroPanel.get());
 		sequencerRetroPanel = std::make_unique<JivSequencerRetroPanel>(processor);
@@ -375,6 +387,22 @@ private:
 		resized();
 	}
 
+	jivui::AppMode currentMode() const {
+		return currentView == View::Browse ? jivui::AppMode::browse
+		       : currentView == View::Sequencer ? jivui::AppMode::sequencer
+		                                        : jivui::AppMode::frontPanel;
+	}
+
+	void setMode(jivui::AppMode mode) {
+		setView(mode == jivui::AppMode::browse ? View::Browse
+		        : mode == jivui::AppMode::sequencer ? View::Sequencer
+		                                            : View::Keyboard);
+		repaint();
+	}
+
+	// Front panel -> sequencer -> browse patches -> front panel.
+	void cycleMode() { setMode(jivui::nextAppMode(currentMode())); }
+
 	static juce::File stateFile() {
 		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
 			.getChildFile("jiv881-state.bin");
@@ -495,10 +523,9 @@ private:
 		if (!processor.loaded)
 			m.addItem("Retry loading ROMs", [this] { retryRoms(); });
 		m.addSeparator();
-		m.addItem(currentView == View::Browse ? "Front Panel" : "Browse patches...",
-		          [this] { setView(currentView == View::Browse ? View::Keyboard : View::Browse); });
-		m.addItem(currentView == View::Sequencer ? "Front Panel" : "Sequencer",
-		          [this] { setView(currentView == View::Sequencer ? View::Keyboard : View::Sequencer); });
+		// The same three views the mode-switch button cycles through, picked directly.
+		for (auto mode : { jivui::AppMode::frontPanel, jivui::AppMode::sequencer, jivui::AppMode::browse })
+			m.addItem(jivui::appModeName(mode), true, currentMode() == mode, [this, mode] { setMode(mode); });
 		// "Sequencer > Classic / Retro / Grid" - the same submenu every front end of the family
 		// offers on right-click (SequencerViewMenu.h).
 		seqview::addSubmenu(m, seqview::current(processor), [this](seqview::View v) {
@@ -575,7 +602,8 @@ private:
 	std::unique_ptr<JivSequencerGridPanel> sequencerGridPanel;
 	std::unique_ptr<JivSequencerRetroPanel> sequencerRetroPanel;
 
-	juce::TextButton menuButton;
+	jivui::HamburgerButton menuButton;
+	jivui::ModeButton modeButton;
 	juce::Label statusLabel;
 
 	// Browse view's NOTE / HOLD / PITCH buttons - see wireUpBrowseTestNote().
@@ -620,7 +648,7 @@ private:
 
 class JiV881AndroidApp : public juce::JUCEApplication {
 public:
-	const juce::String getApplicationName() override { return "jiv881"; }
+	const juce::String getApplicationName() override { return "JiV-881"; }
 	const juce::String getApplicationVersion() override { return "0.1"; }
 
 	void initialise(const juce::String &) override {

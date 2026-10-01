@@ -1,6 +1,6 @@
 # Virtual JiV-881
 
-Emulator of a famous 1U rack unit rompler made by Rolend in 1992, as a VST3, AU plugin, Android and standalone (MacOS, Windows, Linux)
+Emulator of a famous 1U rack unit rompler made by Rolend in 1992, as a VST3, AU, LV2 and CLAP plugin (CLAP/LV2: Linux), Android and standalone (MacOS, Windows, Linux, AppImage)
 
 Based on [NukeYKT's SC55](https://github.com/nukeykt/Nuked-SC55) and on [https://github.com/giulioz/jv880_juce](https://github.com/giulioz/jv880_juce)
 
