@@ -16,16 +16,16 @@ mkdir -p "$TMP_DIR"
 
 # ZIP files to download
 FILES=(
-    "jiv881.component.macOS.zip"
-    "jiv881.vst3.macOS.zip"
-    "jiv881.app.macOS.zip"
+    "JiV-881.component.macOS.zip"
+    "JiV-881.vst3.macOS.zip"
+    "JiV-881.app.macOS.zip"
 )
 
 # Extracted file names (all lowercase)
 EXTRACTED_FILES=(
-    "jiv881.component"
-    "jiv881.vst3"
-    "jiv881.app"
+    "JiV-881.component"
+    "JiV-881.vst3"
+    "JiV-881.app"
 )
 
 # Corresponding installation destinations

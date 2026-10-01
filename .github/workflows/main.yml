@@ -87,15 +87,15 @@ jobs:
       # macOS/Linux jobs already do for their own bundles - `zip` itself isn't available in the
       # windows-2022 runner's Git-Bash, so PowerShell's Compress-Archive instead (needs the -Path
       # itself, not just its parent, since Git-Bash's cd above doesn't carry over to this step).
-      run: Compress-Archive -Path "./Builds/VisualStudio2022/x64/Release/VST3/jiv881.vst3" -DestinationPath "./Builds/VisualStudio2022/x64/Release/VST3/jiv881.vst3.windows.zip"
+      run: Compress-Archive -Path "./Builds/VisualStudio2022/x64/Release/VST3/JiV-881.vst3" -DestinationPath "./Builds/VisualStudio2022/x64/Release/VST3/JiV-881.vst3.windows.zip"
       shell: pwsh
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: jiv881-win
         path: |
-              ./Builds/VisualStudio2022/x64/Release/VST3/jiv881.vst3.windows.zip
-              ./Builds/VisualStudio2022/x64/Release/Standalone Plugin/jiv881.exe
+              ./Builds/VisualStudio2022/x64/Release/VST3/JiV-881.vst3.windows.zip
+              ./Builds/VisualStudio2022/x64/Release/Standalone Plugin/JiV-881.exe
   build-osx:
     runs-on: macos-15
     steps:
@@ -116,9 +116,9 @@ jobs:
     - name: "zip macOS"
       run: |
            cd ./Builds/MacOSX/build/Release/
-           zip -r jiv881.vst3.macOS.zip jiv881.vst3
-           zip -r jiv881.component.macOS.zip jiv881.component
-           zip -r jiv881.app.macOS.zip jiv881.app
+           zip -r JiV-881.vst3.macOS.zip JiV-881.vst3
+           zip -r JiV-881.component.macOS.zip JiV-881.component
+           zip -r JiV-881.app.macOS.zip JiV-881.app
            cd -
       shell: bash
     - name: Upload Artifact
@@ -126,9 +126,9 @@ jobs:
       with:
         name: jiv881-osx
         path: |
-              ./Builds/MacOSX/build/Release/jiv881.vst3.macOS.zip
-              ./Builds/MacOSX/build/Release/jiv881.component.macOS.zip
-              ./Builds/MacOSX/build/Release/jiv881.app.macOS.zip
+              ./Builds/MacOSX/build/Release/JiV-881.vst3.macOS.zip
+              ./Builds/MacOSX/build/Release/JiV-881.component.macOS.zip
+              ./Builds/MacOSX/build/Release/JiV-881.app.macOS.zip
   release:
     name: "Release"
     needs: [build-linux, build-win, build-osx]
@@ -166,7 +166,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: jiv881 Latest
+          name: JiV-881 Latest
           prerelease: true
           generate_release_notes: true
           files: |
@@ -182,7 +182,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: "jiv881 ${{ github.ref_name }}"
+          name: "JiV-881 ${{ github.ref_name }}"
           prerelease: false
           generate_release_notes: true
           files: |

@@ -22,7 +22,7 @@ juce_add_binary_data(JivPanelData
 juce_add_gui_app(jiv881Android
     VERSION ${PROJECT_VERSION}
     COMPANY_NAME "DIY"
-    PRODUCT_NAME "Virtual JiV-881"
+    PRODUCT_NAME "JiV-881"
 )
 
 # _juce_set_output_name (JUCEUtils.cmake) deliberately no-ops on Android, so PRODUCT_NAME above
@@ -107,7 +107,7 @@ target_compile_definitions(jiv881Android PRIVATE
     # getName() returns this literally - normally generated into JucePluginDefines.h by
     # Projucer/juce_add_plugin, but juce_add_gui_app (this target - no plugin wrapper) never
     # defines it. Supplied directly rather than touching PluginProcessor.cpp.
-    "JucePlugin_Name=\"Virtual JiV-881\""
+    "JucePlugin_Name=\"JiV-881\""
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_DISPLAY_SPLASH_SCREEN=0
