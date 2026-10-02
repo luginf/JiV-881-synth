@@ -24,7 +24,7 @@ The [DOCS.md](DOCS.md) for this emulation.
 
 ## Plugin downloads
 
-- [https://github.com/luginf/virtual-jiv-881/releases](https://github.com/luginf/virtual-jiv-881/releases)
+- [https://github.com/luginf/JiV-881-synth/releases](https://github.com/luginf/JiV-881-synth/releases)
 
 
 **NOTE (Windows)**: If you are having troubles with Windows 10, it's possible you need to install the [Visual C++ 2022 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-microsoft-visual-c-redistributable-version).

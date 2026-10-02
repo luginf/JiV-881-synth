@@ -4,7 +4,7 @@
               version="1.2.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
               pluginManufacturerCode="Lgnf" pluginCode="JI81" cppLanguageStandard="17"
               pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="JiV-881"
-              pluginDesc="Virtual JiV-881" companyName="luginf" companyWebsite="https://github.com/luginf/virtual-jiv-881"
+              pluginDesc="Virtual JiV-881" companyName="luginf" companyWebsite="https://github.com/luginf/JiV-881-synth"
               bundleIdentifier="com.luginf.virtual_jiv881" lv2Uri="https://github.com/luginf/virtual-jiv-881/plugins/virtual_jiv881">
   <MAINGROUP id="U4zWTk" name="virtual_jiv881">
     <GROUP id="{BA05F489-649E-6AE4-7F62-10742B1AC120}" name="Assets">

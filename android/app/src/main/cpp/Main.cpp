@@ -224,7 +224,9 @@ public:
 			// (Alan's report) - VirtualKeyboard::kRefH (120, the desktop reference height) is
 			// too short for comfortable touch targets, so this caps it at a modest multiple of
 			// that instead of either extreme.
-			const int kbH = juce::jmin(area.getHeight(), juce::roundToInt(VirtualKeyboard::kRefH * 2.2f));
+			// Portrait: half that height (Alan's request, 2026-10-01); landscape is fine as is.
+				const float kbScale = isLandscape ? 2.2f : 1.1f;
+				const int kbH = juce::jmin(area.getHeight(), juce::roundToInt(VirtualKeyboard::kRefH * kbScale));
 			keyboard.setBounds(area.removeFromTop(kbH));
 		}
 	}

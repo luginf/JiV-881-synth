@@ -10,30 +10,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-linux:
-    # JUCE 8.0.15's prebuilt Linux Projucer binary needs glibc >= 2.38 (confirmed by a failed run:
-    # ubuntu-22.04's glibc 2.35 is too old, hence 24.04 here rather than the more conservative
-    # 22.04 the other jobs might have used).
+  # Projucer (JUCE 8.0.15's prebuilt binary) needs glibc >= 2.38 - confirmed by a failed run on ubuntu-22.04 -
+  # so it runs here on 24.04, only to generate the Makefile. Nothing built on this runner is released: the
+  # binaries must link against an OLD C library to run on older distributions (an AppImage in particular uses
+  # the host's, see https://github.com/AppImage/appimage.github.io/pull/9619), so everything Linux is built in
+  # build-linux-release below, in an ubuntu:22.04 container.
+  generate-linux-build-files:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v3.3.0
       with:
         fetch-depth: 0
         submodules: recursive
-    - name: "Install Linux build dependencies"
-      run: |
-           sudo apt-get update
-           sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk \
-             libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev \
-             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
-             libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev \
-             libwebkit2gtk-4.1-dev libgtk-3-dev
-           # The generated Makefile queries pkg-config for webkit2gtk/gtk+alsa/freetype2/
-           # fontconfig/libcurl in a single `pkg-config --cflags ...` call - if ANY one of them
-           # is missing, pkg-config emits NOTHING for the whole call (not just skips that one),
-           # silently dropping freetype2's/etc's own -I flags too and breaking the build with an
-           # unrelated-looking "ft2build.h not found". Hence webkit2gtk/gtk here even though this
-           # project doesn't use WebBrowserComponent - it's load-bearing for the other flags.
     - name: "Download Projucer"
       run: |
            git clone -b 8.0.15 --depth 1 https://github.com/juce-framework/JUCE JUCE
@@ -41,27 +29,91 @@ jobs:
       shell: bash
       env:
         OS: linux
-    - name: "Build jiv881"
-      run: bash -ex ./build/build-linux.sh
-    - name: "Build .deb"
-      run: bash -ex ./build/build-deb.sh
-    - name: "zip Linux"
+    - name: "Generate the Linux Makefile"
+      run: ./build/bin/JUCE/Projucer --resave VirtualJiV.jucer
+    # Named so that the release job's `jiv881-*` pattern does NOT pick it up (build input, not a release asset).
+    - name: Upload generated build files
+      uses: actions/upload-artifact@v4
+      with:
+        name: buildcfg-linux
+        include-hidden-files: true
+        path: |
+              ./Builds/LinuxMakefile/Makefile
+              ./Builds/LinuxMakefile/make_helpers
+              ./Builds/LinuxMakefile/pre_build
+              ./JuceLibraryCode
+  # ubuntu:22.04 is the oldest Ubuntu LTS still supported; move this to the then-oldest one when it goes out of
+  # support.
+  build-linux-release:
+    needs: generate-linux-build-files
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+    - name: "Install build dependencies"
       run: |
-           cd ./Builds/LinuxMakefile/build
-           zip -r JiV-881.vst3.linux.zip JiV-881.vst3
-           zip -r JiV-881.lv2.linux.zip JiV-881.lv2
-           cp JiV-881 JiV-881.linux
+           apt-get update
+           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+             build-essential cmake git curl ca-certificates file binutils pkg-config zip python3 \
+             libasound2-dev libjack-jackd2-dev ladspa-sdk \
+             libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev \
+             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+             libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev \
+             libwebkit2gtk-4.1-dev libgtk-3-dev
+           # The generated Makefile queries pkg-config for webkit2gtk/gtk+alsa/freetype2/fontconfig/libcurl in a
+           # single call - if ANY one is missing, pkg-config emits nothing for the whole call and the build breaks
+           # with an unrelated-looking "ft2build.h not found". Hence webkit2gtk/gtk even though this project does
+           # not use WebBrowserComponent.
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        submodules: recursive
+    - name: "Fetch JUCE"
+      run: git clone -b 8.0.15 --depth 1 https://github.com/juce-framework/JUCE JUCE
+    - name: "Restore the generated build files"
+      uses: actions/download-artifact@v4
+      with:
+        name: buildcfg-linux
+        path: .
+    - name: "Build Standalone, VST3 and LV2"
+      run: |
+           make -C Builds/LinuxMakefile CONFIG=Release -j"$(nproc)"
+           cd Builds/LinuxMakefile
+           strip build/JiV-881 build/JiV-881.lv2/JiV-881.so build/JiV-881.vst3/Contents/x86_64-linux/JiV-881.so
+           rm -f build/JiV-881.a
+    - name: "Build the CLAP"
+      run: |
+           cmake -S clap -B /tmp/jiv-clap -DCMAKE_BUILD_TYPE=Release
+           cmake --build /tmp/jiv-clap --target JiV881_CLAP -j"$(nproc)"
+           strip "$(find /tmp/jiv-clap -name 'JiV-881.clap' | head -1)"
+    - name: "Package"
+      run: |
+           bash -ex ./build/build-deb.sh
+           mkdir -p dist
+           cd Builds/LinuxMakefile/build
+           zip -r ../../../dist/JiV-881.vst3.linux.zip JiV-881.vst3
+           zip -r ../../../dist/JiV-881.lv2.linux.zip JiV-881.lv2
+           cp JiV-881 ../../../dist/JiV-881.linux
            cd -
-      shell: bash
+           zip -j dist/JiV-881.clap.linux.zip "$(find /tmp/jiv-clap -name 'JiV-881.clap' | head -1)"
+           cp build/jiv881_amd64.deb dist/
+           bash build/make-appimage.sh \
+             --name JiV-881 \
+             --binary Builds/LinuxMakefile/build/JiV-881 \
+             --icon android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png \
+             --comment "Virtual JiV-881 sound module" \
+             --version "$(git describe --tags --always)" \
+             --out dist
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: jiv881-linux
         path: |
-              ./Builds/LinuxMakefile/build/JiV-881.vst3.linux.zip
-              ./Builds/LinuxMakefile/build/JiV-881.lv2.linux.zip
-              ./Builds/LinuxMakefile/build/JiV-881.linux
-              ./build/*.deb
+              dist/JiV-881.vst3.linux.zip
+              dist/JiV-881.lv2.linux.zip
+              dist/JiV-881.clap.linux.zip
+              dist/JiV-881.linux
+              dist/jiv881_amd64.deb
+              dist/JiV-881-x86_64.AppImage
   build-win:
     runs-on: windows-2022
     steps:
@@ -131,7 +183,7 @@ jobs:
               ./Builds/MacOSX/build/Release/JiV-881.app.macOS.zip
   release:
     name: "Release"
-    needs: [build-linux, build-win, build-osx]
+    needs: [build-linux-release, build-win, build-osx]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: "ubuntu-latest"
     # This repo's default GITHUB_TOKEN permissions are read-only (Settings > Actions > General),
