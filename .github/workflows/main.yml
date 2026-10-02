@@ -87,6 +87,8 @@ jobs:
            strip "$(find /tmp/jiv-clap -name 'JiV-881.clap' | head -1)"
     - name: "Package"
       run: |
+           # the container's git refuses a workspace owned by another user ("dubious ownership")
+           git config --global --add safe.directory "$GITHUB_WORKSPACE"
            bash -ex ./build/build-deb.sh
            mkdir -p dist
            cd Builds/LinuxMakefile/build
