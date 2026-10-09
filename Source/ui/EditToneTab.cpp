@@ -27,9 +27,9 @@ EditToneTab::EditToneTab
             { (int)t1.getValue(), (int)l1.getValue() }, { (int)t2.getValue(), (int)l2.getValue() },
             { (int)t3.getValue(), (int)l3.getValue() }, { (int)t4.getValue(), l4 ? (int)l4->getValue() : 0 } }};
     };
-    penvGraph.source = [=, this] { return stagesOf(penv1TimeSlider, penv1LevelSlider, penv2TimeSlider, penv2LevelSlider, penv3TimeSlider, penv3LevelSlider, penv4TimeSlider, &penv4LevelSlider); };
-    fenvGraph.source = [=, this] { return stagesOf(fenv1TimeSlider, fenv1LevelSlider, fenv2TimeSlider, fenv2LevelSlider, fenv3TimeSlider, fenv3LevelSlider, fenv4TimeSlider, &fenv4LevelSlider); };
-    aenvGraph.source = [=, this] { return stagesOf(aenv1TimeSlider, aenv1LevelSlider, aenv2TimeSlider, aenv2LevelSlider, aenv3TimeSlider, aenv3LevelSlider, aenv4TimeSlider, nullptr); };
+    penvGraph.source = [this, stagesOf] { return stagesOf(penv1TimeSlider, penv1LevelSlider, penv2TimeSlider, penv2LevelSlider, penv3TimeSlider, penv3LevelSlider, penv4TimeSlider, &penv4LevelSlider); };
+    fenvGraph.source = [this, stagesOf] { return stagesOf(fenv1TimeSlider, fenv1LevelSlider, fenv2TimeSlider, fenv2LevelSlider, fenv3TimeSlider, fenv3LevelSlider, fenv4TimeSlider, &fenv4LevelSlider); };
+    aenvGraph.source = [this, stagesOf] { return stagesOf(aenv1TimeSlider, aenv1LevelSlider, aenv2TimeSlider, aenv2LevelSlider, aenv3TimeSlider, aenv3LevelSlider, aenv4TimeSlider, nullptr); };
     aenvGraph.endsAtZero = true;
     if (toneCount == 0)
     {
