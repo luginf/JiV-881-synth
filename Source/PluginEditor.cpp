@@ -137,6 +137,7 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     };
     pinInViewport(performanceViewport, performanceTab);
     pinInViewport(editCommonViewport, editCommonTab);
+    editTone1Tab.setLinkedTabs({ &editTone2Tab, &editTone3Tab, &editTone4Tab });
     pinInViewport(editTone1Viewport, editTone1Tab);
     pinInViewport(editTone2Viewport, editTone2Tab);
     pinInViewport(editTone3Viewport, editTone3Tab);

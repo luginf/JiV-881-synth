@@ -21,6 +21,26 @@ EditToneTab::EditToneTab
     ( VirtualJVProcessor &p, VirtualJVEditor *e, uint8_t toneIn)
     : processor(p), editor(e), toneCount(toneIn)
 {
+    auto stagesOf = [](Slider &t1, Slider &l1, Slider &t2, Slider &l2, Slider &t3, Slider &l3, Slider &t4, Slider *l4)
+    {
+        return std::array<EnvelopeGraph::Stage, 4>{{
+            { (int)t1.getValue(), (int)l1.getValue() }, { (int)t2.getValue(), (int)l2.getValue() },
+            { (int)t3.getValue(), (int)l3.getValue() }, { (int)t4.getValue(), l4 ? (int)l4->getValue() : 0 } }};
+    };
+    penvGraph.source = [=, this] { return stagesOf(penv1TimeSlider, penv1LevelSlider, penv2TimeSlider, penv2LevelSlider, penv3TimeSlider, penv3LevelSlider, penv4TimeSlider, &penv4LevelSlider); };
+    fenvGraph.source = [=, this] { return stagesOf(fenv1TimeSlider, fenv1LevelSlider, fenv2TimeSlider, fenv2LevelSlider, fenv3TimeSlider, fenv3LevelSlider, fenv4TimeSlider, &fenv4LevelSlider); };
+    aenvGraph.source = [=, this] { return stagesOf(aenv1TimeSlider, aenv1LevelSlider, aenv2TimeSlider, aenv2LevelSlider, aenv3TimeSlider, aenv3LevelSlider, aenv4TimeSlider, nullptr); };
+    aenvGraph.endsAtZero = true;
+    if (toneCount == 0)
+    {
+        addAndMakeVisible(linkToggle);
+        linkToggle.setTooltip("Padlock: every edit made in Tone 1 is also applied to Tones 2-4 "
+                              "(not Enable, Wave Group/Waveform or Velocity Range)");
+    }
+    addAndMakeVisible(penvGraph);
+    addAndMakeVisible(fenvGraph);
+    addAndMakeVisible(aenvGraph);
+
     addAndMakeVisible(waveGroupComboBox);
     waveGroupComboBox.addListener(this);
     waveGroupComboBox.addItem("Internal", 1);
@@ -855,6 +875,9 @@ void EditToneTab::updateValues()
     reverbSlider.setValue(int8_t((tone.reverbSend)), juce::dontSendNotification);
     chorusSlider.setValue(int8_t((tone.chorusSend)), juce::dontSendNotification);
 
+    penvGraph.repaint();
+    fenvGraph.repaint();
+    aenvGraph.repaint();
 }
 
 void EditToneTab::resized()
@@ -868,7 +891,8 @@ void EditToneTab::resized()
     const auto height = 24;
     const auto vMargin = 24;
 
-    toneSwitchToggle      .setBounds(sliderLeft1 - 90, top + height * 0 + vMargin * 0, width, height);
+    toneSwitchToggle      .setBounds(sliderLeft1 - 90, top + height * 0 + vMargin * 0, 90, height);
+    linkToggle            .setBounds(sliderLeft1 + 20, top + height * 0 + vMargin * 0, 110, height);
 
     waveGroupComboBox     .setBounds(sliderLeft1, top + height * 1 + vMargin * 1, width, height);
     waveformComboBox      .setBounds(sliderLeft1, top + height * 2 + vMargin * 1, width, height);
@@ -991,6 +1015,15 @@ void EditToneTab::resized()
     reverbSlider          .setBounds(sliderLeft3, top + height * 13 + vMargin * 1, width, height);
     chorusSlider          .setBounds(sliderLeft3, top + height * 14 + vMargin * 1, width, height);
     outputComboBox        .setBounds(sliderLeft3, top + height * 15 + vMargin * 1, width, height);
+
+    // free space under the third column: three envelope sketches sharing it
+    const auto gx = sliderLeft3 - 90;
+    const auto gy = top + height * 16 + vMargin * 1 + 8;
+    const auto gw = getWidth() - gx - 14;
+    const auto gh = (top + height * 21 + vMargin * 6 - 8 - gy - 2 * 6) / 3; // stops above the EXP rows
+    penvGraph.setBounds(gx, gy, gw, gh);
+    fenvGraph.setBounds(gx, gy + gh + 6, gw, gh);
+    aenvGraph.setBounds(gx, gy + 2 * (gh + 6), gw, gh);
 }
 
 void EditToneTab::sliderValueChanged(juce::Slider* slider)
@@ -1004,6 +1037,16 @@ void EditToneTab::sliderValueChanged(juce::Slider* slider)
 
     Patch* patch = (Patch*)processor.status.patch;
     Tone* tone = &patch->tones[toneCount];
+
+    if ((id >= PitchEnvTime1 && id <= PitchEnvLevel4) || (id >= FilterEnvTime1 && id <= FilterEnvLevel4)
+        || (id >= AmpEnvTime1 && id <= AmpEnvTime4))
+    {
+        penvGraph.repaint();
+        fenvGraph.repaint();
+        aenvGraph.repaint();
+    }
+
+    propagateEdit(id, slider);
 
     switch (id)
     {
@@ -1282,6 +1325,8 @@ void EditToneTab::buttonClicked(juce::Button* button)
     Patch* patch = (Patch*)processor.status.patch;
     Tone* tone = &patch->tones[toneCount];
 
+    propagateEdit(id, button);
+
     switch (id)
     {
     case ToneSwitch:
@@ -1330,6 +1375,8 @@ void EditToneTab::comboBoxChanged(juce::ComboBox* comboBox)
 
     Patch* patch = (Patch*)processor.status.patch;
     Tone* tone = &patch->tones[toneCount];
+
+    propagateEdit(id, comboBox);
 
     switch (id)
     {
@@ -1488,6 +1535,42 @@ void EditToneTab::comboBoxChanged(juce::ComboBox* comboBox)
     }
 }
 
+void EditToneTab::propagateEdit(uint32_t id, juce::Component *src)
+{
+    // Enable, Wave Group, Waveform and Velocity Range (ids 200-204) are what makes the tones differ.
+    if (toneCount != 0 || linkedTabs.empty() || !linkToggle.getToggleState() || id < 205 || id == 0xFFFFFFF)
+        return;
+    if (src == &linkToggle)
+        return;
+    for (auto *t : linkedTabs)
+        t->mirrorEdit(id, src);
+}
+
+void EditToneTab::mirrorEdit(uint32_t id, juce::Component *src)
+{
+    for (auto *child : getChildren())
+    {
+        if (auto *s = dynamic_cast<Slider *>(child))
+        {
+            if (s->getID() == id)
+                if (auto *from = dynamic_cast<Slider *>(src))
+                    s->setValue(from->getValue(), juce::sendNotificationSync);
+        }
+        else if (auto *m = dynamic_cast<Menu *>(child))
+        {
+            if (m->getID() == id)
+                if (auto *from = dynamic_cast<Menu *>(src))
+                    m->setSelectedItemIndex(from->getSelectedItemIndex(), juce::sendNotificationSync);
+        }
+        else if (auto *b = dynamic_cast<Button *>(child))
+        {
+            if (b->getID() == id)
+                if (auto *from = dynamic_cast<Button *>(src))
+                    b->setToggleState(from->getToggleState(), juce::sendNotificationSync);
+        }
+    }
+}
+
 void EditToneTab::sendSysexPatchToneChange1Byte(uint8_t address, uint8_t value)
 {
     uint8_t data[5];
@@ -1567,4 +1650,4 @@ void EditToneTab::sendSysexPatchToneChange2Byte(uint8_t address, uint8_t value)
     processor.mcuLock.enter();
     processor.mcu->postMidiSC55(buf, 13);
     processor.mcuLock.exit();
-}
+}

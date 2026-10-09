@@ -15,6 +15,8 @@
 #include "../PluginProcessor.h"
 
 #include "widgets/Button.h"
+#include "widgets/EnvelopeGraph.h"
+#include "widgets/LinkToggle.h"
 #include "widgets/Menu.h"
 #include "widgets/Slider.h"
 
@@ -38,6 +40,11 @@ public:
     void comboBoxChanged(juce::ComboBox *) override;
 
     void updateValues();
+
+    // Tone 1 only: the other tabs that receive a copy of every edit made here while the padlock is on.
+    void setLinkedTabs(std::vector<EditToneTab *> tabs) { linkedTabs = std::move(tabs); }
+    // Called on a linked tab: reproduce the edit of the widget `id` held by `src` (a widget of the master tab).
+    void mirrorEdit(uint32_t id, juce::Component *src);
 
     void sendSysexPatchToneChange1Byte(uint8_t address, uint8_t value);
     void sendSysexPatchToneChange2Byte(uint8_t address, uint8_t value);
@@ -367,6 +374,16 @@ private:
     Slider aenv3LevelSlider{ AmpEnvLevel3, 0, 127, 1 };
     juce::Label aenv4TimeLabel{ "", "4" };
     Slider aenv4TimeSlider{ AmpEnvTime4, 0, 127, 1 };
+
+    EnvelopeGraph penvGraph{ "Pitch envelope", true, juce::Colour(0xff5fb4ff) };
+    EnvelopeGraph fenvGraph{ "Filter envelope", false, juce::Colour(0xffffb347) };
+    EnvelopeGraph aenvGraph{ "Amp envelope", false, juce::Colour(0xff7be08a) };
+
+    // Copies the edit of widget `id` to the linked tabs when this is the master tab with the padlock on.
+    void propagateEdit(uint32_t id, juce::Component *src);
+
+    std::vector<EditToneTab *> linkedTabs;
+    LinkToggle linkToggle{ "Link 2-4" };
 
     juce::Label dryLabel{ "", "Dry Send" };
     Slider drySlider{ DrySend, 0, 127, 1, 127 };
