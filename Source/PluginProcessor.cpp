@@ -217,8 +217,9 @@ void savePersistedDisplayMode(VirtualJVProcessor::DisplayMode mode) {
 //==============================================================================
 VirtualJVProcessor::VirtualJVProcessor()
     : AudioProcessor(
+          // Output only: this is a synth with no audio input, and an input bus makes the Standalone wrapper
+          // mute the input at first launch ("audio input is muted to avoid feedback loop").
           BusesProperties()
-              .withInput("Input", juce::AudioChannelSet::stereo(), true)
               .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
 
   loadPersistedKeyboardSettings(keyboardPcInput, keyboardPcLayout);
