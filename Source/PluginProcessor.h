@@ -105,6 +105,24 @@ public:
     // a ".jvp" extension - PatchBrowser's Save As... button uses a juce::FileChooser in save
     // mode to pick both the name and (implicitly) that. Returns false if the write failed.
     bool saveCurrentPatchAs(const juce::File &file);
+
+    // Imports the patches of a JV-880 SysEx dump (.syx, or the SysEx events of a .mid) into the User bank
+    // (userPatchesDir(), one .jvp per patch) - GitHub issue #4. Each patch is sent over MIDI to a scratch
+    // slot of the firmware's Internal Patch Memory (the last one, restored afterwards) and read back, so the
+    // firmware itself does the conversion into its own record format. Meant for a worker thread: `waitMs`
+    // must let the audio thread run for that long (Thread::sleep), `progress` (index, count, name) returns
+    // false to cancel. Tone patches only; Performances, Rhythm sets and System data are counted and ignored.
+    struct SysexImportReport
+    {
+        int imported = 0;
+        int failed = 0;
+        juce::StringArray names;
+        juce::StringArray notes;
+        juce::String error;
+    };
+    SysexImportReport importSysexFile(const juce::File &file,
+                                      const std::function<bool(int, int, const juce::String &)> &progress,
+                                      const std::function<void(int)> &waitMs);
     static juce::File userPatchesDir();
     int numUserPatches = 0; // how many of the reserved patchInfos[] tail slots are populated
 

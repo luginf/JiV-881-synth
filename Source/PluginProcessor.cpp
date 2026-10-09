@@ -7,6 +7,7 @@
 */
 
 #include "PluginProcessor.h"
+#include "SysexImporter.h"
 #include "PluginEditor.h"
 #include "sequencer/JivSequencerSongsFile.h"
 #include <cmath>
@@ -904,6 +905,175 @@ bool VirtualJVProcessor::attemptLoadRoms() {
 
   loadPerformanceSessionState();
 
+  // GitHub issue #2: Performance mode must survive a patch click in Browse (setCurrentProgram()), and a
+  // Part must obey Channel Volume (CC7). Headless: prints the mode byte and the audio peaks.
+  if (std::getenv("JV880_SELFTEST_PERF3")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      float peak = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++)
+          peak = std::max(peak, std::max(std::abs(l[i]), std::abs(r[i])));
+      }
+      return peak;
+    };
+    auto note = [&](uint8_t ch) {
+      uint8_t on[3] = {(uint8_t)(0x90 | ch), 60, 100}, off[3] = {(uint8_t)(0x80 | ch), 60, 0};
+      mcu->postMidiSC55(on, 3);
+      const float p = runMs(800);
+      mcu->postMidiSC55(off, 3);
+      runMs(600);
+      return p;
+    };
+    runMs(2000);
+    sendPatchToPerformancePart(0, 0);
+    setPerformancePartParams(0, 1, 127, 64, true);
+    sendPatchToPerformancePart(64, 1);
+    setPerformancePartParams(1, 2, 127, 64, true);
+    setPerformanceModeEnabled(true);
+    runMs(1500);
+    std::fprintf(stderr, "[selftest-perf3] perf on: nvram[0x11]=%02x flag=%d peak(ch1)=%.4f\n", mcu->nvram[0x11], (int)performanceModeEnabled, note(0));
+    setCurrentProgram(10); // a tone patch, as a click in Browse
+    std::fprintf(stderr, "[selftest-perf3] right after click: nvram[0x11]=%02x\n", mcu->nvram[0x11]);
+    for (int i = 0; i < 6; i++) { runMs(100); std::fprintf(stderr, "[selftest-perf3]   +%d00ms: nvram[0x11]=%02x\n", i + 1, mcu->nvram[0x11]); }
+    runMs(900);
+    std::fprintf(stderr, "[selftest-perf3] after tone click: nvram[0x11]=%02x flag=%d peak(ch1)=%.4f peak(ch2)=%.4f\n", mcu->nvram[0x11], (int)performanceModeEnabled, note(0), note(1));
+    setCurrentProgram(192); // a Rhythm Set: engine reset path
+    runMs(3000);
+    std::fprintf(stderr, "[selftest-perf3] after rhythm click: nvram[0x11]=%02x flag=%d peak(ch1)=%.4f peak(ch2)=%.4f\n", mcu->nvram[0x11], (int)performanceModeEnabled, note(0), note(1));
+    uint8_t cc0[3] = {0xB0, 7, 0}, cc127[3] = {0xB0, 7, 127};
+    mcu->postMidiSC55(cc0, 3);
+    runMs(100);
+    const float quiet = note(0);
+    mcu->postMidiSC55(cc127, 3);
+    runMs(100);
+    std::fprintf(stderr, "[selftest-perf3] CC7=0 peak=%.4f, CC7=127 peak=%.4f\n", quiet, note(0));
+    // GitHub issue #5: master volume survives a state save/restore, and an old-size blob leaves it alone.
+    setMasterVolume(0.37f);
+    juce::MemoryBlock block;
+    getStateInformation(block);
+    setMasterVolume(1.0f);
+    setStateInformation(block.getData(), (int)block.getSize());
+    std::fprintf(stderr, "[selftest-perf3] state %zu bytes, master volume after restore = %.2f (expected 0.37)\n", block.getSize(), getMasterVolume());
+    setMasterVolume(0.5f);
+    setStateInformation(block.getData(), (int)sizeof(DataToSave));
+    std::fprintf(stderr, "[selftest-perf3] old-format blob keeps the volume: %.2f (expected 0.50)\n", getMasterVolume());
+    std::exit(0);
+  }
+
+  // GitHub issue #4: JV880_SELFTEST_SYXIMPORT=<file.syx|.mid> runs the SysEx import with the emulator pumped by hand.
+  if (const char *syxPath = std::getenv("JV880_SELFTEST_SYXIMPORT")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    float peak = 0;
+    auto runMs = [&](int ms) {
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++) peak = std::max(peak, std::abs(l[i]));
+      }
+    };
+    runMs(2000);
+    setCurrentProgram(0);
+    runMs(500);
+    const auto report = importSysexFile(juce::File(syxPath),
+        [](int i, int n, const juce::String &name) { std::fprintf(stderr, "[selftest-syx] %d/%d %s\n", i + 1, n, name.toRawUTF8()); return true; },
+        runMs);
+    std::fprintf(stderr, "[selftest-syx] imported=%d failed=%d error=%s\n", report.imported, report.failed, report.error.toRawUTF8());
+    for (auto &n : report.notes) std::fprintf(stderr, "[selftest-syx] note: %s\n", n.toRawUTF8());
+    for (auto &n : report.names) std::fprintf(stderr, "[selftest-syx] name: %s\n", n.toRawUTF8());
+    // Load the first imported patch and play it.
+    if (report.imported > 0 && !patchInfoPerGroup[userGroupIndex].empty()) {
+      for (auto *info : patchInfoPerGroup[userGroupIndex]) {
+        if (!info->present || info->drums) continue;
+        std::fprintf(stderr, "[selftest-syx] user patch \"%.*s\" (index %d)\n", info->nameLength, info->name, info->iInList);
+      }
+      setCurrentProgram(patchInfoPerGroup[userGroupIndex].back()->iInList);
+      runMs(500);
+      peak = 0;
+      uint8_t on[3] = {0x90, 60, 100};
+      mcu->postMidiSC55(on, 3);
+      runMs(800);
+      std::fprintf(stderr, "[selftest-syx] last imported patch plays: peak=%.4f\n", peak);
+    }
+    std::exit(0);
+  }
+
+  // Does the Performance Part 8 "Internal" Rhythm Set (bank 0) live at Rhythm Temp (nvram[0x67f0])? If so,
+  // an expansion/User rhythm set can be injected there like tone patches go into Internal slots 1-7
+  // (GitHub issue #2, last comment). Proof by sound: Part 8 on Preset B (bank 3) vs Part 8 on the Internal
+  // set after copying Preset B's bytes into Rhythm Temp must render the same drums.
+  if (std::getenv("JV880_SELFTEST_RHYMEM")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    struct Stats { double rms; float peak; };
+    auto runMs = [&](int ms, bool measure) {
+      double sum = 0; float peak = 0; long n = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        if (measure)
+          for (unsigned int i = 0; i < blockFrames; i++) { sum += l[i] * l[i]; peak = std::max(peak, std::abs(l[i])); n++; }
+      }
+      return Stats{ n ? std::sqrt(sum / n) : 0.0, peak };
+    };
+    auto hit = [&](int note) {
+      uint8_t on[3] = {0x99, (uint8_t)note, 110}, off[3] = {0x89, (uint8_t)note, 0};
+      mcu->postMidiSC55(on, 3);
+      const Stats st = runMs(700, true);
+      mcu->postMidiSC55(off, 3);
+      runMs(500, false);
+      return st;
+    };
+    runMs(2000, false);
+    sendPatchToPerformancePart(192, 7);
+    setPerformancePartParams(7, 10, 127, 64, true);
+    setPerformanceModeEnabled(true);
+    runMs(1500, false);
+    for (int note : {36, 38, 42}) {
+      sendPatchToPerformancePart(193, 7); // Preset B rhythm set
+      runMs(500, false);
+      const Stats b = hit(note);
+      sendPatchToPerformancePart(194, 7); // Internal rhythm set (bank 0)
+      runMs(500, false);
+      const Stats internal = hit(note);
+      mcuLock.enter();
+      memcpy(&mcu->nvram[0x67f0], patchInfos[193].ptr, 0xa7c); // Preset B's bytes into Rhythm Temp
+      mcuLock.exit();
+      sendPatchToPerformancePart(194, 7);
+      runMs(500, false);
+      const Stats injected = hit(note);
+      std::fprintf(stderr, "[selftest-rhymem] note %d: PresetB rms=%.5f | Internal rms=%.5f | Internal after copy rms=%.5f\n",
+                   note, b.rms, internal.rms, injected.rms);
+    }
+    // An expansion rhythm set through the real API.
+    int exp = -1;
+    for (int i = 195; i < romPatchCapacity + userPatchCapacity; i++)
+      if (patchInfos[i].present && patchInfos[i].drums && patchInfos[i].expansionI != 0xff) { exp = i; break; }
+    if (exp < 0) {
+      // No expansion loads in this sandbox: save Preset B's rhythm set as a User rhythm set instead (a non-native
+      // rhythm set all the same, so it takes the same injection path).
+      std::fprintf(stderr, "[selftest-rhymem] no expansion rhythm set here, using a saved User rhythm set\n");
+      setCurrentProgram(193);
+      if (saveCurrentPatchAs(userPatchesDir().getChildFile("SelfTestRhythm.jvp")) && !patchInfoPerGroup[userGroupIndex].empty())
+        exp = patchInfoPerGroup[userGroupIndex].back()->iInList;
+    }
+    if (exp >= 0) {
+      std::fprintf(stderr, "[selftest-rhymem] expansion rhythm set index %d (%s), eligible=%d\n", exp,
+                   std::string(patchInfos[exp].name, (size_t)std::min(patchInfos[exp].nameLength, 16)).c_str(),
+                   (int)isEligibleForPerformancePart(exp));
+      sendPatchToPerformancePart(exp, 7);
+      runMs(800, false);
+      for (int note : {36, 38, 42})
+        std::fprintf(stderr, "[selftest-rhymem]   expansion set, note %d: rms=%.5f\n", note, hit(note).rms);
+      std::fprintf(stderr, "[selftest-rhymem] Part 8: bank=%d number=%d name=%s\n", performanceParts[7].bank, performanceParts[7].number, performanceParts[7].name);
+    }
+    std::exit(0);
+  }
+
   // Headless validation for the shipped Performance mode v2 API (sendPatchToPerformancePart(),
   // setPerformanceModeEnabled(), etc.) - as opposed to JV880_SELFTEST_PERF above, which only
   // exercised raw DT1 messages to find the address map in the first place. Same technique: drive
@@ -1530,6 +1700,13 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
   if (!loaded)
     return;
 
+  // GitHub issue #2: a click on a patch in Browse used to switch Performance mode off. While it is on, the
+  // patch is just stored into Patch Temp (slot 0, which no Performance Part uses): no mode byte rewrite, no
+  // Program Change (it would reach Part 1 now that Parts receive them) and no engine reset - except when an
+  // expansion board has to be swapped in, which resets the engine and needs Common + Parts pushed again.
+  const bool keepPerformance = performanceModeEnabled;
+  bool engineReset = false;
+
   mcuLock.enter();
 
   // Cache the OUTGOING patch's live edits before overwriting the edit buffer, keyed by its own
@@ -1558,6 +1735,7 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
     status.currentExpansion = expansionI;
     memcpy(mcu->pcm.waverom_exp, expansionsDescr[expansionI], 0x800000);
     mcu->SC55_Reset();
+    engineReset = true;
   }
 
   if (patchInfos[index].drums) {
@@ -1569,16 +1747,25 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
     {
       const auto cached = editedDrumsCache.find(index);
       const uint8_t *source = cached != editedDrumsCache.end() ? cached->second.data() : originalDrumsSnapshot;
-      memcpy(&mcu->nvram[0x67f0], source, 0xa7c);
+      // In Performance mode with Part 8 on the Internal rhythm set, Rhythm Temp belongs to that Part: only the
+      // app-side copy is updated here (written back to Rhythm Temp when Performance mode is left).
+      const bool protectRhythmTemp = keepPerformance && performanceParts[kNumPerformanceParts - 1].present
+                                     && performanceParts[kNumPerformanceParts - 1].bank == 0;
+      if (!protectRhythmTemp)
+        memcpy(&mcu->nvram[0x67f0], source, 0xa7c);
+      memcpy(status.drums, source, 0xa7c);
     }
-    memcpy(status.drums, &mcu->nvram[0x67f0], 0xa7c);
-    mcu->SC55_Reset();
+    if (!keepPerformance)
+      mcu->SC55_Reset();
   } else {
     status.isDrums = false;
     memcpy(originalPatchSnapshot, (uint8_t *)patchInfos[index].name, 0x16a);
     const auto cached = editedPatchCache.find(index);
     const uint8_t *source = cached != editedPatchCache.end() ? cached->second.data() : originalPatchSnapshot;
-    if (mcu->nvram[0x11] != 1) {
+    if (keepPerformance) {
+      memcpy(&mcu->nvram[0x0d70], source, 0x16a);
+      memcpy(status.patch, &mcu->nvram[0x0d70], 0x16a);
+    } else if (mcu->nvram[0x11] != 1) {
       mcu->nvram[0x11] = 1;
       memcpy(&mcu->nvram[0x0d70], source, 0x16a);
       memcpy(status.patch, &mcu->nvram[0x0d70], 0x16a);
@@ -1595,15 +1782,11 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
 
   mcuLock.exit();
 
-  // Every branch above just wrote nvram[0x11] to Patch mode (0/1 depending on isDrums, never
-  // Performance) - loading a Patch from Browse always leaves the firmware in Patch mode, same
-  // as pressing the real PATCH/PERFORM button would. Resync the app-level flag/checkbox the
-  // same way PanelSkin::pressButton() already does for that physical button (Alan's report,
-  // 2026-09-09: Browse's own patch clicks caused the exact same class of desync that fix never
-  // covered, since it only intercepted the button, not this call). setPerformanceModeEnabled()
-  // takes mcuLock itself, so this has to run after the mcuLock.exit() above, not before.
-  if (performanceModeEnabled)
-    setPerformanceModeEnabled(false);
+  // Leaving Performance mode through a patch click is no longer possible (see keepPerformance above); the
+  // app-level flag and the firmware stay in step. Only an expansion swap (engine reset) needs the
+  // Performance state sent again. setPerformanceModeEnabled() takes mcuLock itself, hence after exit().
+  if (keepPerformance && engineReset)
+    setPerformanceModeEnabled(true);
 
   if (auto editor = getActiveEditor())
   {
@@ -1667,6 +1850,98 @@ bool VirtualJVProcessor::isPatchModified(int index) const {
 juce::File VirtualJVProcessor::userPatchesDir() {
   return appDataBaseDir()
       .getChildFile("UserPatches");
+}
+
+VirtualJVProcessor::SysexImportReport VirtualJVProcessor::importSysexFile(
+    const juce::File &file, const std::function<bool(int, int, const juce::String &)> &progress,
+    const std::function<void(int)> &waitMs) {
+  SysexImportReport report;
+  if (!loaded) {
+    report.error = "The ROMs are not loaded";
+    return report;
+  }
+
+  juce::String readError;
+  const auto messages = sysexio::readMessages(file, readError);
+  if (readError.isNotEmpty()) {
+    report.error = readError;
+    return report;
+  }
+  const auto patches = sysexio::extractPatches(messages, report.notes);
+  if (patches.empty()) {
+    report.error = "No JV-880 patch data found in " + file.getFileName();
+    return report;
+  }
+
+  // Each patch goes through Internal Patch Memory, where the firmware converts the SysEx layout (34 + 4 x 116
+  // bytes) into its own 362-byte record. The last Internal slot is the scratch area; its content is put back
+  // afterwards. (Patch Temp itself, 00 08 20, is not where the firmware keeps the record.)
+  constexpr int kScratchSlot = 63;
+  const size_t scratchOffset = 0x0d70 + (size_t)kScratchSlot * 0x16a;
+  uint8_t original[0x16a];
+  mcuLock.enter();
+  memcpy(original, &mcu->nvram[scratchOffset], sizeof(original));
+  mcuLock.exit();
+
+  auto dir = userPatchesDir();
+  dir.createDirectory();
+
+  const int count = (int)patches.size();
+  for (int i = 0; i < count; ++i) {
+    const auto &patch = patches[(size_t)i];
+    if (progress && !progress(i, count, patch.name)) {
+      report.notes.add("Cancelled");
+      break;
+    }
+
+    mcuLock.enter();
+    for (const auto &m : sysexio::internalSlotMessages(patch, kScratchSlot))
+      mcu->postMidiSC55(m.data(), (int)m.size());
+    mcuLock.exit();
+
+    // Wait for the firmware's UART to take everything (31250 baud pace), then a little for it to act on it.
+    for (int waited = 0; waited < 6000 && mcu->uart_read_ptr != mcu->uart_write_ptr; waited += 10)
+      waitMs(10);
+    waitMs(250);
+
+    uint8_t record[0x16a];
+    mcuLock.enter();
+    memcpy(record, &mcu->nvram[scratchOffset], sizeof(record));
+    mcuLock.exit();
+
+    // The record starts with the 12-character name: if it is the one that was sent, the firmware took the patch.
+    if (memcmp(record, patch.blocks[0].data(), 12) != 0) {
+      ++report.failed;
+      report.notes.add("\"" + patch.name + "\" was not accepted by the firmware (is the audio engine running?)");
+      continue;
+    }
+
+    juce::String safe = juce::File::createLegalFileName(patch.name);
+    if (safe.isEmpty())
+      safe = "Imported Patch";
+    auto target = dir.getChildFile(safe + ".jvp");
+    for (int n = 2; target.exists(); ++n)
+      target = dir.getChildFile(safe + " " + juce::String(n) + ".jvp");
+
+    juce::MemoryBlock block;
+    const uint8_t header[2] = {0, 0xff}; // tone patch, no expansion board
+    block.append(header, 2);
+    block.append(record, sizeof(record));
+    if (target.replaceWithData(block.getData(), block.getSize())) {
+      ++report.imported;
+      report.names.add(patch.name);
+    } else {
+      ++report.failed;
+      report.notes.add("Could not write " + target.getFileName());
+    }
+  }
+
+  mcuLock.enter();
+  memcpy(&mcu->nvram[scratchOffset], original, sizeof(original));
+  mcuLock.exit();
+
+  refreshUserPatches();
+  return report;
 }
 
 bool VirtualJVProcessor::saveCurrentPatchAs(const juce::File &file) {
@@ -1890,18 +2165,22 @@ bool VirtualJVProcessor::isEligibleForPerformancePart(int patchInfoIndex) const 
   if (performancePatchMapping(patchInfoIndex, bank, number, isRhythm))
     return true; // ROM-native - already lives in real Patch Memory verbatim
 
-  // Expansion-ROM/User: eligible for tone Parts only (injectCustomPatchIntoInternalMemory()) -
-  // rhythm sets from those banks aren't supported yet, see CLAUDE.md.
-  return !patchInfos[patchInfoIndex].drums;
+  // Expansion-ROM/User: tone patches go into an Internal Patch Memory slot, rhythm sets into Rhythm Temp
+  // (the Part 8 "Internal" set, found by JV880_SELFTEST_RHYMEM) - see injectCustomPatchIntoInternalMemory().
+  return true;
 }
 
 // See this function's own comment in PluginProcessor.h. Caller must already hold mcuLock.
 void VirtualJVProcessor::injectCustomPatchIntoInternalMemory(int patchInfoIndex, int internalSlot) {
   auto &info = patchInfos[patchInfoIndex];
-  if (info.drums)
-    return;
-
-  memcpy(&mcu->nvram[0x0d70 + internalSlot * 0x16a], info.name, 0x16a);
+  if (info.drums) {
+    // A rhythm set: the Performance Part 8 "Internal" Rhythm Set (bank 0) IS Rhythm Temp, nvram[0x67f0]
+    // (measured: Part 8 on Preset B and Part 8 on Internal after copying Preset B's bytes here render the
+    // same drums). Part 8 is then pointed at bank 0 / number 0 by the caller.
+    memcpy(&mcu->nvram[0x67f0], info.ptr, 0xa7c);
+  } else {
+    memcpy(&mcu->nvram[0x0d70 + internalSlot * 0x16a], info.name, 0x16a);
+  }
 
   // Only one waverom_exp can be loaded into this single engine at a time - matches setCurrent
   // Program()'s own handling for Patch mode, and the real hardware's own single wave-expansion-
@@ -1948,6 +2227,12 @@ void VirtualJVProcessor::pushPerformancePartToEngine(int partIndex) {
   data[28] = 64; // partfinetune, centre
   data[29] = 1;  // reverbswitch - onto the Performance's shared reverb bus
   data[30] = 1;  // chorusswitch - ditto
+  // Receive switches: all zero meant the Part ignored Channel Volume (CC7), Hold-1 and Program Change
+  // (GitHub issue #2: "Channel Volume CC messages stop working in Performance mode"). On: as on a
+  // real JV-880's Performance Part.
+  data[31] = 1;  // receiveprogramchange
+  data[32] = 1;  // receivevolume
+  data[33] = 1;  // receivehold1
 
   static constexpr uint8_t partOffsets[VirtualJVProcessor::kNumPerformanceParts] = {
       0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
@@ -1976,12 +2261,16 @@ void VirtualJVProcessor::sendPatchToPerformancePart(int patchInfoIndex, int part
 
   mcuLock.enter();
 
-  if (!isRomNative) {
-    if (info.drums) {
-      // Rhythm set from an expansion/User bank - not addressable yet, see CLAUDE.md.
-      mcuLock.exit();
-      return;
-    }
+  if (isRomNative && info.drums && bank == 0) {
+    // The factory Internal rhythm set: Rhythm Temp may hold an expansion/User set injected earlier.
+    injectCustomPatchIntoInternalMemory(patchInfoIndex, 0);
+  }
+  if (!isRomNative && info.drums) {
+    // Rhythm set from an expansion/User bank: injected into Rhythm Temp, which Part 8 reads as its Internal set.
+    bank = 0;
+    number = 0;
+    injectCustomPatchIntoInternalMemory(patchInfoIndex, 0);
+  } else if (!isRomNative) {
     // Expansion-ROM/User tone patch: inject it into this Part's own reserved Internal Patch
     // Memory slot (1..7 - slot 0 is Patch mode's own live buffer, never touched here).
     bank = 0;
@@ -2105,6 +2394,10 @@ void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
   // already uses - no parallel engines, no extra CPU cost versus Patch mode regardless of how
   // many of the 8 Parts are active.
   uint8_t modeByte = enabled ? 0 : 1;
+  // Leaving Performance mode: Part 8 may have had an expansion/User rhythm set copied into Rhythm Temp; give
+  // Patch mode back the rhythm set it was playing.
+  if (!enabled && performanceModeEnabled && status.isDrums)
+    memcpy(&mcu->nvram[0x67f0], status.drums, 0xa7c);
   sendSysexBlock(0, &modeByte, 1);
 
   if (enabled) {
@@ -2468,8 +2761,13 @@ void VirtualJVProcessor::getStateInformation(juce::MemoryBlock &destData)
   status.chorusEnabled = ((mcu->nvram[0x02] >> 1) & 1) == 1;
   mcuLock.exit();
 
-  destData.ensureSize(sizeof(DataToSave));
+  destData.ensureSize(sizeof(DataToSave) + 8);
   destData.replaceAll(&status, sizeof(DataToSave));
+  // Master volume rides after the fixed blob, behind a tag: DataToSave is memcpy'd as it is, so a
+  // new field there would break every project saved before (GitHub issue #5, volume reset to 100).
+  destData.append("MVOL", 4);
+  const float volume = masterVolume;
+  destData.append(&volume, sizeof(volume));
 }
 
 void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
@@ -2479,6 +2777,14 @@ void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
   if (data == nullptr || sizeInBytes < static_cast<int>(sizeof(DataToSave)))
     return;
   memcpy(&status, data, sizeof(DataToSave));
+  if (sizeInBytes >= static_cast<int>(sizeof(DataToSave)) + 8) {
+    const auto *tail = static_cast<const uint8_t *>(data) + sizeof(DataToSave);
+    if (std::memcmp(tail, "MVOL", 4) == 0) {
+      float volume = 1.0f;
+      std::memcpy(&volume, tail + 4, sizeof(volume));
+      setMasterVolume(volume); // clamps to 0..1
+    }
+  }
   // Same defence as setCurrentProgram()'s expansionI check: an out-of-range index would
   // read past expansionsDescr[] below.
   if (status.currentExpansion < 0 || status.currentExpansion >= NUM_EXPS)

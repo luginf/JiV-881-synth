@@ -18,6 +18,24 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
   addAndMakeVisible(revertButton);
   revertButton.onClick = [this] { processor.revertCurrentPatch(); };
 
+  addAndMakeVisible(importButton);
+  importButton.setTooltip("Import the patches of a JV-880 SysEx (.syx) or MIDI (.mid) dump into the User bank");
+  importButton.onClick = [this]
+  {
+    if (!processor.loaded)
+      return;
+    importChooser = std::make_unique<juce::FileChooser>(
+        "Import JV-880 patches (SysEx or MIDI file)...",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.syx;*.mid;*.midi");
+    importChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                               [this](const juce::FileChooser &fc)
+                               {
+                                 const auto file = fc.getResult();
+                                 if (file != juce::File{})
+                                   startSysexImport(file);
+                               });
+  };
+
   addAndMakeVisible(saveAsButton);
   saveAsButton.onClick = [this]
   {
@@ -57,13 +75,7 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
             // The save may have landed in the currently-visible User bank (or the user may
             // browse to it later) - refresh unconditionally rather than tracking whether it's
             // the active category right now.
-            categoriesListBox.updateContent();
-            categoriesListBox.repaint();
-            for (int i = 0; i < maxColumnsPool; i++)
-            {
-              patchesListBoxes[i]->updateContent();
-              patchesListBoxes[i]->repaint();
-            }
+            refreshAfterPatchesChanged();
         });
   };
 
@@ -248,11 +260,94 @@ PatchBrowser::~PatchBrowser()
   }
 }
 
+void PatchBrowser::refreshAfterPatchesChanged()
+{
+  categoriesListBox.updateContent();
+  categoriesListBox.repaint();
+  for (int i = 0; i < maxColumnsPool; i++)
+  {
+    patchesListBoxes[i]->updateContent();
+    patchesListBoxes[i]->repaint();
+  }
+}
+
+namespace
+{
+// Runs VirtualJVProcessor::importSysexFile() on its own thread, behind a progress window the user can cancel.
+class SysexImportJob : public juce::ThreadWithProgressWindow
+{
+public:
+  SysexImportJob(VirtualJVProcessor &p, const juce::File &f, std::function<void(VirtualJVProcessor::SysexImportReport)> done)
+      : juce::ThreadWithProgressWindow("Importing " + f.getFileName() + "...", true, true), processor(p), file(f),
+        onDone(std::move(done))
+  {
+  }
+
+  void run() override
+  {
+    report = processor.importSysexFile(
+        file,
+        [this](int index, int count, const juce::String &name)
+        {
+          setProgress((double)index / (double)juce::jmax(1, count));
+          setStatusMessage(juce::String(index + 1) + " / " + juce::String(count) + "   " + name);
+          return !threadShouldExit();
+        },
+        [this](int ms) { wait(ms); });
+  }
+
+  void threadComplete(bool /*userPressedCancel*/) override
+  {
+    auto done = std::move(onDone);
+    auto result = report;
+    juce::MessageManager::callAsync([done, result] { if (done) done(result); });
+  }
+
+private:
+  VirtualJVProcessor &processor;
+  juce::File file;
+  VirtualJVProcessor::SysexImportReport report;
+  std::function<void(VirtualJVProcessor::SysexImportReport)> onDone;
+};
+} // namespace
+
+void PatchBrowser::startSysexImport(const juce::File &file)
+{
+  if (!processor.loaded || importJob != nullptr)
+    return;
+
+  juce::Component::SafePointer<PatchBrowser> safeThis(this);
+  importJob = std::make_unique<SysexImportJob>(
+      processor, file,
+      [safeThis](VirtualJVProcessor::SysexImportReport report)
+      {
+        if (safeThis == nullptr)
+          return;
+        safeThis->importJob.reset();
+        safeThis->refreshAfterPatchesChanged();
+
+        juce::String text;
+        if (report.error.isNotEmpty())
+          text = report.error;
+        else
+          text = juce::String(report.imported) + " patch(es) imported into the User bank"
+                 + (report.failed > 0 ? ", " + juce::String(report.failed) + " failed" : juce::String()) + ".";
+        for (const auto &n : report.notes)
+          text += "\n- " + n;
+        juce::AlertWindow::showMessageBoxAsync(report.error.isNotEmpty() || report.imported == 0
+                                                   ? juce::MessageBoxIconType::WarningIcon
+                                                   : juce::MessageBoxIconType::InfoIcon,
+                                               "SysEx import", text);
+      });
+  importJob->launchThread();
+}
+
 void PatchBrowser::resized()
 {
   const int topBarH = 26;
   saveAsButton.setBounds(getWidth() - 110, 2, 106, topBarH - 4);
   revertButton.setBounds(getWidth() - 270, 2, 156, topBarH - 4);
+  importButton.setBounds(getWidth() - 430, 2, 156, topBarH - 4);
 
   const int listsH = getHeight() - topBarH;
   categoriesListBox.setBounds(0, topBarH, 180, listsH);

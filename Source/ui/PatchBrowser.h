@@ -86,6 +86,13 @@ public:
   juce::TextButton saveAsButton { "Save As..." };
   std::unique_ptr<juce::FileChooser> saveAsChooser; // kept alive until launchAsync()'s callback fires
 
+  // Imports the patches of a JV-880 .syx / .mid dump into the "User" bank (GitHub issue #4).
+  juce::TextButton importButton { "Import SysEx..." };
+  std::unique_ptr<juce::FileChooser> importChooser;
+  std::unique_ptr<juce::ThreadWithProgressWindow> importJob; // runs VirtualJVProcessor::importSysexFile()
+  void startSysexImport(const juce::File &file);
+  void refreshAfterPatchesChanged();
+
   class CategoriesListModel : public juce::ListBoxModel,
                               public juce::ChangeBroadcaster {
     int getNumRows() override { return userGroupIndex + 1; }
