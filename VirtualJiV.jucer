@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="DSwmeO" name="virtual_jiv881" projectType="audioplug" useAppConfig="0"
-              version="1.3.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
+              version="1.4.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
               pluginManufacturerCode="Lgnf" pluginCode="JI81" cppLanguageStandard="17"
               pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="JiV-881"
               pluginDesc="Virtual JiV-881" companyName="luginf" companyWebsite="https://github.com/luginf/JiV-881-synth"
