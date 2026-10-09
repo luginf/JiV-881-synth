@@ -371,11 +371,8 @@ void PanelSkin::timerCallback()
     // the background photo's own g.drawImage() call in paint() below becomes a cheap no-op
     // outside them, even though paint() itself still runs in full.
     juce::Rectangle<int> dirty;
-    if (variant.hasLcdAndVolume)
-    {
-        rebuildLcdImage();
+    if (variant.hasLcdAndVolume && rebuildLcdImage())
         dirty = refRectToComponent(kLcdX, kLcdY, kLcdW, kLcdH).getSmallestIntegerContainer();
-    }
 
     // Only PATCH/PERFORM's LED (firmware-read, kButtons[0]) and the 4 TONE SWITCH LEDs
     // (firmware-read, kButtons[8..11]) can change without a mouse click on this component - the
@@ -397,14 +394,14 @@ juce::Rectangle<float> PanelSkin::ledRect(int buttonIndex) const
 // buffer of which only the top-left 820x100 is ever live content) - copied into an owned Image
 // here instead of drawn directly, since it then needs to be fitted (not 1:1 - see below) into
 // the photo's own measured LCD rect.
-void PanelSkin::rebuildLcdImage()
+bool PanelSkin::rebuildLcdImage()
 {
     if (!processor.loaded || !processor.mcu)
-        return;
+        return false;
 
     auto *bitmapResult = (uint8_t *)processor.mcu->lcd.LCD_Update();
     if (!bitmapResult)
-        return;
+        return false;
 
     // Only the top-left 820x100 of the 1024x1024 buffer is ever live content (see this method's
     // own comment) - the alpha fixup below used to run over the full 1024x1024 regardless (over
@@ -414,12 +411,66 @@ void PanelSkin::rebuildLcdImage()
         for (int x = 0; x < 820; x++)
             bitmapResult[(y * 1024 + x) * 4 + 3] = 0xff;
 
-    if (!lcdImage.isValid() || lcdImage.getWidth() != 820 || lcdImage.getHeight() != 100)
-        lcdImage = juce::Image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+    // The photo's LCD opening is smaller than the emulator's 820x100 render, so that bitmap (5x5 dots
+    // with a 1 px gap on a 6 px pitch) used to be shrunk by about 0.8: the 1 px gaps then came out
+    // uneven and the glyphs ragged (Alan, 2026-10-09, Panel Compact and Full). The dots are redrawn
+    // here instead, from the emulator's own cells (character grid and 6 px dot pitch as in
+    // LCD::LCD_FontRenderStandard), at twice the resolution and with no gap at all - dots of one
+    // stroke run together, like on the Di-111 panel - then scaled down once, with the high quality
+    // filter (see paint()).
+    constexpr int k = 2;                 // supersampling
+    constexpr int pitch = 6 * k;         // one dot cell
+    constexpr int gap = 0;               // no space between the dots in the panel LCD (only the LCD-only view keeps its grid)
+    if (!lcdImage.isValid() || lcdImage.getWidth() != 820 * k || lcdImage.getHeight() != 100 * k)
+    {
+        lcdImage = juce::Image(juce::Image::PixelFormat::ARGB, 820 * k, 100 * k, false);
+        lastLcdCells.clear(); // a fresh, blank image: redraw whatever the LCD shows
+    }
 
-    juce::Image::BitmapData pixelMap(lcdImage, juce::Image::BitmapData::readWrite);
-    for (int y = 0; y < pixelMap.height; y++)
-        memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+    auto pixelAt = [bitmapResult](int y, int x)
+    {
+        const auto *p = bitmapResult + (y * 1024 + x) * 4;
+        return juce::Colour(*(const uint32_t *)p).withAlpha(1.0f);
+    };
+
+    const uint32_t unlit = processor.mcu->lcd.lcd_col2 & 0xffffff;
+    const uint32_t glass = processor.mcu->lcd.lcd_bg & 0xffffff;
+
+    // Nothing to redraw (nor repaint) while the LCD shows what it showed: compare the sampled dots first.
+    std::vector<uint32_t> cells;
+    cells.reserve(2 * 24 * 7 * 5 + 3);
+    cells.push_back(glass);
+    cells.push_back(unlit);
+    cells.push_back(processor.mcu->lcd.lcd_col1 & 0xffffff);
+    for (int line = 0; line < 2; line++)
+        for (int c = 0; c < 24; c++)
+            for (int i = 0; i < 7; i++)
+                for (int j = 0; j < 5; j++)
+                    cells.push_back(*(const uint32_t *)(bitmapResult + ((4 + line * 50 + i * 6 + 2) * 1024 + (4 + c * 34 + j * 6 + 2)) * 4) & 0xffffff);
+    if (cells == lastLcdCells)
+        return false;
+    lastLcdCells = std::move(cells);
+
+    juce::Graphics g(lcdImage);
+    lcdGlass = pixelAt(0, 0); // glass (lcd_bg)
+    g.fillAll(lcdGlass);
+    for (int line = 0; line < 2; line++)
+        for (int c = 0; c < 24; c++)
+            for (int i = 0; i < 7; i++)
+                for (int j = 0; j < 5; j++)
+                {
+                    const int y0 = 4 + line * 50 + i * 6;
+                    const int x0 = 4 + c * 34 + j * 6;
+                    // Only the lit dots are drawn: the unlit ones (a grid of slightly darker squares in the
+                    // emulator's bitmap) chopped the text into pieces ("Patch ::::: RxCH") once shrunk into
+                    // the photo's opening. Blank cells are plain glass, as on the Di-111.
+                    const uint32_t raw = *(const uint32_t *)(bitmapResult + ((y0 + 2) * 1024 + (x0 + 2)) * 4) & 0xffffff;
+                    if (raw == unlit || raw == glass)
+                        continue;
+                    g.setColour(pixelAt(y0 + 2, x0 + 2)); // lit dot (or the cursor's overlay)
+                    g.fillRect(x0 * k + gap / 2, y0 * k + gap / 2, pitch - gap, pitch - gap);
+                }
+    return true;
 }
 
 void PanelSkin::paint(juce::Graphics &g)
@@ -435,9 +486,12 @@ void PanelSkin::paint(juce::Graphics &g)
     if (variant.hasLcdAndVolume && lcdImage.isValid())
     {
         auto lcdRect = refRectToComponent(kLcdX, kLcdY, kLcdW, kLcdH);
-        g.setColour(juce::Colours::black);
+        // The glass fills the whole opening (it used to be black around a letterboxed image, which made the
+        // text look cut off against the green), and the text sits inside it with a margin, as on the Di-111.
+        g.setColour(lcdGlass);
         g.fillRect(lcdRect);
-        g.drawImage(lcdImage, lcdRect, juce::RectanglePlacement::centred);
+        g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
+        g.drawImage(lcdImage, lcdRect.reduced(lcdRect.getWidth() * 0.03f, 0.0f), juce::RectanglePlacement::centred);
     }
 
     // All the small red LEDs (Alan's request, 2026-09-08, working from real-hardware reference

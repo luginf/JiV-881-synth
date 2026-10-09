@@ -171,11 +171,15 @@ private:
     void fireEncoderStep(int direction); // 0 = Data -, 1 = Data +
     void toggleDataHeld(); // see this method's own comment in PanelSkin.cpp
 
-    void rebuildLcdImage(); // only when variant.hasLcdAndVolume
+    // Only when variant.hasLcdAndVolume. Returns true when the picture changed (text, cursor blink, colour):
+    // nothing is redrawn, and nothing needs repainting, while the LCD shows the same thing.
+    bool rebuildLcdImage();
+    std::vector<uint32_t> lastLcdCells;
 
     VirtualJVProcessor &processor;
     Variant variant;
     juce::Image panelImage;
+    juce::Colour lcdGlass = juce::Colours::black; // the LCD's own background colour, fills the whole photo opening
     juce::Image lcdImage; // the emulator's own live dot-matrix render, re-fetched on each timer tick
 
     int pressedButtonIndex = kHitNone;
