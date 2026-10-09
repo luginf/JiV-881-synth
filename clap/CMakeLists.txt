@@ -7,7 +7,7 @@
 #   cmake -S clap -B /tmp/jiv-clap -DCMAKE_BUILD_TYPE=Release
 #   cmake --build /tmp/jiv-clap --target JiV881_CLAP -j8      # -> JiV-881.clap
 cmake_minimum_required(VERSION 3.22)
-project(JiV881Clap VERSION 1.2.0)
+project(JiV881Clap VERSION 1.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
