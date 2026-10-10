@@ -26,7 +26,7 @@
 #include "widgets/Slider.h"
 
 //==============================================================================
-class PerformanceTab : public juce::Component
+class PerformanceTab : public juce::Component, private juce::Timer
 {
 public:
     explicit PerformanceTab(VirtualJVProcessor &);
@@ -40,6 +40,9 @@ public:
     void refreshFromProcessor();
 
 private:
+    // Mirrors Performances loaded on the Panel (firmware side) into this tab; 4 Hz, only while shown.
+    void timerCallback() override;
+
     VirtualJVProcessor &processor;
 
     Button enablePerformanceToggle{0, "Enable Performance Mode"};
@@ -61,8 +64,49 @@ private:
         Slider panSlider{0, 0, 127, 1, 64, true};
         Button enabledToggle{0, "On"};
         juce::TextButton clearButton{"Clear"};
+        // Points the Common/Tone edit tabs at this Part (tone Parts only).
+        juce::TextButton editButton{"Edit"};
     };
     std::array<PartRow, VirtualJVProcessor::kNumPerformanceParts> partRows;
+
+    // Remaining Part fields (tuning, FX switches, output, receive switches, voice reserve) - the
+    // rest of what the firmware's Part record exposes (GitHub issue #6).
+    juce::Label detailsHeaderLabel;
+    struct PartDetailRow
+    {
+        juce::Label nameLabel;
+        Slider coarseSlider{0, 16, 112, 1, 64, true};
+        Slider fineSlider{0, 14, 114, 1, 64, true};
+        Button reverbToggle{0, "Rev"};
+        Button chorusToggle{0, "Cho"};
+        juce::ComboBox outputCombo;
+        Button pcToggle{0, "PC"};
+        Button volumeToggle{0, "Vol"};
+        Button holdToggle{0, "Hold"};
+        Slider reserveSlider{0, 0, 28, 1, 0};
+    };
+    std::array<PartDetailRow, VirtualJVProcessor::kNumPerformanceParts> detailRows;
+    juce::Label coarseHeader, fineHeader, outputHeader, rxHeader, reserveHeader;
+
+    // Performance Common: key mode and the reverb/chorus shared by all Parts.
+    juce::Label effectsHeaderLabel;
+    struct LabelledCombo
+    {
+        juce::Label label;
+        juce::ComboBox combo;
+    };
+    struct LabelledSlider
+    {
+        juce::Label label;
+        Slider slider{0, 0, 127, 1, 0};
+    };
+    LabelledCombo keyModeCtl, reverbTypeCtl, chorusTypeCtl, chorusOutputCtl;
+    LabelledSlider reverbLevelCtl, reverbTimeCtl, reverbFeedbackCtl;
+    LabelledSlider chorusLevelCtl, chorusDepthCtl, chorusRateCtl, chorusFeedbackCtl;
+
+    void pushDetailParams(int partIndex);
+    void pushCommonParams();
+    bool updatingFromState = false;
 
     juce::Label bankHeaderLabel;
     juce::TextButton saveAsButton{"Save As..."};

@@ -10,6 +10,7 @@
 
 #include "SettingsTab.h"
 #include <JuceHeader.h>
+#include "../JackMultiOut.h"
 
 // Only declares StandalonePluginHolder/AudioDeviceSelectorComponent wiring - this project builds
 // all of AU/LV2/Standalone/VST3 from one shared "Shared Code" library (see Builds/LinuxMakefile),
@@ -75,10 +76,27 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   {
     if (auto *holder = juce::StandalonePluginHolder::getInstance())
     {
+#if JUCE_LINUX
+      // Our own JACK device type with 18 free, named output ports (JUCE's offers 8 auto-connected ones).
+      bool alreadyAdded = false;
+      for (auto *type : holder->deviceManager.getAvailableDeviceTypes())
+        alreadyAdded = alreadyAdded || type->getTypeName() == jivjack::kTypeName;
+      if (!alreadyAdded)
+      {
+        holder->deviceManager.addAudioDeviceType(std::make_unique<jivjack::DeviceType>());
+        // The device state saved by the Standalone was restored before this type existed: switch back to it.
+        if (processor.getPreferredAudioDeviceType() == jivjack::kTypeName)
+          holder->deviceManager.setCurrentAudioDeviceType(jivjack::kTypeName, true);
+      }
+#endif
+      deviceTypeWatcher = std::make_unique<DeviceTypeWatcher>(
+          holder->deviceManager, [this](const juce::String &type) { processor.setPreferredAudioDeviceType(type); });
+
       auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(
           holder->deviceManager,
           0, holder->getNumInputChannels(),
-          0, holder->getNumOutputChannels(),
+          // Up to 18 outputs: main + one stereo pair per Performance Part (separate outputs, issue #3)
+          0, juce::jmax(holder->getNumOutputChannels(), 2 + 2 * VirtualJVProcessor::kNumPerformanceParts),
           true,                    // showMidiInputOptions
           processor.producesMidi(), // showMidiOutputSelector
           true,                    // showChannelsAsStereoPairs
@@ -159,6 +177,33 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   {
     processor.setDisplayMode((VirtualJVProcessor::DisplayMode)(displayModeCombo.getSelectedId() - 1));
   };
+
+  addAndMakeVisible(extraPolyphonyToggle);
+  extraPolyphonyToggle.setToggleState(processor.getExtraPolyphony(), juce::dontSendNotification);
+  extraPolyphonyToggle.addListener(this);
+
+  addAndMakeVisible(outputModeCombo);
+  outputModeCombo.addItem("Outputs: Main + Parts", 1);
+  outputModeCombo.addItem("Outputs: Main + Sub", 2);
+  outputModeCombo.setSelectedId(processor.getOutputMode() + 1, juce::dontSendNotification);
+  outputModeCombo.setTooltip("Main + Parts: one stereo pair per Performance Part. Main + Sub: one extra pair with the dry sum "
+                             "of the Parts whose Output is Sub (Performance tab > Part details), like the JV-880's SUB jack.");
+  outputModeCombo.onChange = [this] { processor.setOutputMode(outputModeCombo.getSelectedId() - 1); };
+
+  addAndMakeVisible(mainFullMixToggle);
+  mainFullMixToggle.setToggleState(processor.getMainFullMix(), juce::dontSendNotification);
+  mainFullMixToggle.setTooltip("Separate Part outputs: keep the complete mix on the main output and send each Part to its own "
+                               "output as a copy. Off: Parts leave the main output, which then only has the effects return.");
+  mainFullMixToggle.addListener(this);
+
+  if (processor.wrapperType != juce::AudioProcessor::wrapperType_Standalone)
+  {
+    addAndMakeVisible(multiOutToggle);
+    multiOutToggle.setToggleState(processor.getMultiOutBuses(), juce::dontSendNotification);
+    multiOutToggle.setTooltip("Start with 8 extra stereo outputs, one per Performance Part (effects stay on the main output). "
+                              "Applies to plugin instances created after this change.");
+    multiOutToggle.addListener(this);
+  }
 
   if (processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
   {
@@ -247,6 +292,7 @@ void SettingsTab::resized()
   masterTuneSlider  .setBounds(sliderLeft3, top, width, height);
   masterVolumeSlider.setBounds(sliderLeft3, row2Top, width, height);
   dspLoadLabel      .setBounds(sliderLeft1 - 90, row2Top, width, height);
+  extraPolyphonyToggle.setBounds(sliderLeft2 - 90, row2Top, width + 60, height);
 
   // Display mode (Alan's request, 2026-09-08) - see PanelSkin.h/VirtualJVProcessor::DisplayMode.
   const auto displaySectionTop = row2Top + height + 20;
@@ -255,6 +301,9 @@ void SettingsTab::resized()
 
   // Sequencer on/off (Alan's request, 2026-09-09) - same row as Display, right-aligned; only
   // present at all (see the constructor) in a Standalone build.
+  multiOutToggle.setBounds(460, displaySectionTop, 260, 24);
+  mainFullMixToggle.setBounds(460, displaySectionTop + 28, 150, 24);
+  outputModeCombo.setBounds(614, displaySectionTop + 28, 190, 24);
   sequencerSectionHeaderLabel.setBounds(460, displaySectionTop, 90, 22);
   sequencerToggle.setBounds(550, displaySectionTop, 140, 24);
   sequencerViewCombo.setBounds(694, displaySectionTop, 110, 24);
@@ -320,6 +369,15 @@ void SettingsTab::buttonClicked(juce::Button *button)
     break;
   case Chorus:
     processor.sendSysexParamChange(0x05, chorusToggle.getToggleState());
+    break;
+  case ExtraPolyphony:
+    processor.setExtraPolyphony(extraPolyphonyToggle.getToggleState());
+    break;
+  case MainFullMix:
+    processor.setMainFullMix(mainFullMixToggle.getToggleState());
+    break;
+  case MultiOut:
+    processor.setMultiOutBuses(multiOutToggle.getToggleState());
     break;
   case SequencerEnabled:
     processor.setSequencerEnabled(sequencerToggle.getToggleState());

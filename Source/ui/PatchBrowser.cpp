@@ -79,6 +79,13 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
         });
   };
 
+  addAndMakeVisible(searchBox);
+  searchBox.setTextToShowWhenEmpty("Search presets in all banks and expansions...", juce::Colours::grey);
+  searchBox.onTextChange = [this] { updateSearch(); };
+  searchBox.onEscapeKey = [this] { searchBox.clear(); updateSearch(); };
+  searchListBox.setRowHeight(rowHeight + 3);
+  addChildComponent(searchListBox);
+
   categoriesListBox.setRowHeight(34);
   addAndMakeVisible(categoriesListBox);
   categoriesListModel.addChangeListener(this);
@@ -113,6 +120,66 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
     patchesListBoxes[col]->selectRow(row);
     */
   }
+}
+
+void PatchBrowser::updateSearch()
+{
+  searchResults.clear();
+  const auto query = searchBox.getText().trim();
+  const bool active = query.isNotEmpty() && processor.loaded;
+
+  if (active)
+  {
+    for (int g = 0; g < (int)processor.patchInfoPerGroup.size(); g++)
+    {
+      if (g > 0 && g < userGroupIndex && !romInfos[g + romCountRequired].loaded)
+        continue;
+      if (g == 1 && !romInfos[g + romCountRequired - 1].loaded)
+        continue;
+      for (auto *info : processor.patchInfoPerGroup[g])
+        if (info != nullptr && juce::String(info->name, info->nameLength).containsIgnoreCase(query))
+          searchResults.push_back({ info->iInList, g });
+    }
+  }
+
+  searchListBox.updateContent();
+  searchListBox.deselectAllRows();
+  searchListBox.setVisible(active);
+  categoriesListBox.setVisible(!active);
+  for (int i = 0; i < maxColumnsPool; i++)
+    patchesListBoxes[i]->setVisible(!active && i < activeColumns);
+  searchListBox.repaint();
+}
+
+void PatchBrowser::SearchListModel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected)
+{
+  g.fillAll(selected ? juce::Colour(0xff42A2C8) : juce::Colour(0xff263238));
+  if (row < 0 || row >= (int)browser.searchResults.size())
+    return;
+  const auto &r = browser.searchResults[(size_t)row];
+  const auto &info = browser.processor.patchInfos[r.patchIndex];
+  g.setColour(selected ? juce::Colours::black : juce::Colours::white);
+  g.drawFittedText(juce::String(info.name, info.nameLength), { 5, 0, width / 2, height - 2 }, juce::Justification::left, 1);
+  g.setColour(selected ? juce::Colours::black : juce::Colours::lightblue);
+  g.drawFittedText(r.group <= userGroupIndex ? groupNames[r.group] : "", { width / 2, 0, width / 2 - 5, height - 2 },
+                   juce::Justification::left, 1);
+  g.setColour(juce::Colours::white.withAlpha(0.4f));
+  g.drawRect(0, height - 1, width, 1);
+}
+
+void PatchBrowser::SearchListModel::selectedRowsChanged(int row)
+{
+  if (row < 0 || row >= (int)browser.searchResults.size())
+    return;
+  browser.processor.setCurrentProgram(browser.searchResults[(size_t)row].patchIndex);
+  if (browser.onPatchSelected)
+    browser.onPatchSelected();
+}
+
+void PatchBrowser::SearchListModel::listBoxItemClicked(int row, const juce::MouseEvent &e)
+{
+  if (e.mods.isPopupMenu() && row >= 0 && row < (int)browser.searchResults.size())
+    browser.showSendMenuForPatch(browser.searchResults[(size_t)row].patchIndex);
 }
 
 void PatchBrowser::showSendMenuForPatch(int index)
@@ -350,6 +417,8 @@ void PatchBrowser::resized()
   importButton.setBounds(getWidth() - 430, 2, 156, topBarH - 4);
 
   const int listsH = getHeight() - topBarH;
+  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 12), topBarH - 4);
+  searchListBox.setBounds(0, topBarH, getWidth(), listsH);
   categoriesListBox.setBounds(0, topBarH, 180, listsH);
 
   reflowPatchColumns();
@@ -415,7 +484,7 @@ void PatchBrowser::reflowPatchColumns()
 
   for (int i = 0; i < maxColumnsPool; i++)
   {
-    if (i >= activeColumns)
+    if (i >= activeColumns || searchListBox.isVisible())
     {
       patchesListBoxes[i]->setVisible(false);
       continue;

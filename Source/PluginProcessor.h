@@ -235,7 +235,67 @@ public:
         int level = 100;        // 0-127
         int pan = 64;           // 0-127, 64 = centre (matches the firmware's own partpan field range)
         bool enabled = true;    // false = receiveswitch off (Part stays configured but silent)
+        // Remaining Part fields of the firmware's 35-byte Part record (Edisyn's allToneParameters).
+        int coarseTune = 64;    // 16-112, 64 = 0 (semitones)
+        int fineTune = 64;      // 14-114, 64 = 0 (cents)
+        bool reverbSwitch = true;
+        bool chorusSwitch = true;
+        int outputSelect = 0;   // 0 = Main, 1 = Sub, 2 = Patch (use the Patch's own output)
+        bool rxProgramChange = true;
+        bool rxVolume = true;
+        bool rxHold1 = true;
     };
+
+    // The Performance Common record beyond the name (Edisyn's allGlobalParameters): key mode,
+    // the shared reverb and chorus, voice reserve per Part (0-28, total <= 28). Until this struct
+    // existed they were all pushed as 0, which showed up as "Reverb/Chorus level 00" on the
+    // firmware's own Panel screens when switching to Performance mode (GitHub issue #2).
+    struct PerformanceCommon
+    {
+        int keyMode = 0;        // 0 Layer, 1 Zone, 2 Single
+        int reverbType = 4;     // 0 Room 1, 1 Room 2, 2 Stage 1, 3 Stage 2, 4 Hall 1, 5 Hall 2, 6 Delay, 7 Pan Delay
+        int reverbLevel = 40;   // 0-127
+        int reverbTime = 64;
+        int reverbFeedback = 0;
+        int chorusType = 0;     // 0 Chorus 1, 1 Chorus 2, 2 Chorus 3
+        int chorusLevel = 40;
+        int chorusDepth = 54;
+        int chorusRate = 38;
+        int chorusFeedback = 0;
+        int chorusOutput = 0;   // 0 Mix, 1 Reverb
+        int voiceReserve[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    };
+    PerformanceCommon performanceCommon;
+    // Re-send one Part / the Common record after the UI changed a field of performanceParts[] or
+    // performanceCommon directly; also saves the session file.
+    // Common/Tone edit tabs in Performance mode: they normally write Patch Temp (slot 0 of the
+    // Internal bank), which no Part reads. beginEditPerformancePart() copies the Part's patch into
+    // its own Internal slot (partIndex+1), points the Part at it and loads status.patch from it, so
+    // the tabs' SysEx (rerouted via patchEditAddrHi()/Mid()) edit what that Part actually plays.
+    // The Browse patch is restored by endEditPerformancePart().
+    int getEditingPerformancePart() const { return editingPerformancePart; }
+    bool beginEditPerformancePart(int partIndex);
+    void endEditPerformancePart();
+    uint8_t patchEditAddrHi() const { return editingPerformancePart >= 0 ? 0x01 : 0x00; }
+    uint8_t patchEditAddrMid() const { return editingPerformancePart >= 0 ? (uint8_t)(0x40 + editingPerformancePart + 1) : 0x08; }
+    // Posts an edit-tab SysEx to every running engine.
+    void postEditSysex(const uint8_t *data, size_t length);
+    int editingPerformancePart = -1;
+    uint8_t editPatchBackup[0x16a] = {0};
+
+    // Performances loaded on the Panel (Bank Select + Program Change on the firmware's control
+    // channel 16, or the PATCH/PERFORM + data entry buttons) land in the firmware's own Performance
+    // Temp RAM (sram 0x206a name, 0x2076 Common, 0x2095 + 22*Part Part records - found by diffing
+    // sram after single-field SysEx writes). pollPerformanceFromFirmware() mirrors that RAM into
+    // performanceParts[]/performanceCommon when it changed without us writing it; returns true
+    // when it imported something (the Performance tab then refreshes).
+    bool pollPerformanceFromFirmware();
+    bool importPerformanceFromFirmware(); // unconditional version, used by the poll and the self test
+    std::vector<uint8_t> lastFirmwarePerfSnapshot;
+    double lastPerfSysexMs = 0;
+
+    void applyPerformancePart(int partIndex);
+    void applyPerformanceCommon();
 
     static constexpr int kNumPerformanceParts = 8; // matches the real hardware: 7 Patch parts + Part 8 fixed to Rhythm
     PerformancePart performanceParts[kNumPerformanceParts];
@@ -246,6 +306,26 @@ public:
     void clearPerformancePart(int partIndex);
     void setPerformancePartParams(int partIndex, int midiChannel, int level, int pan, bool enabled);
     void setPerformanceModeEnabled(bool enabled);
+    // "Part n" output buses on by default in plugin formats (GitHub issue #3); takes effect for plugin
+    // instances created afterwards (a host decides about buses when it loads the plugin).
+    static BusesProperties makeBusesProperties();
+    // true: the main output keeps the full mix and each Part output is a copy; false (default): Parts leave the
+    // main, which then only carries the effects return and whatever is not routed (what a DAW expects).
+    juce::String getPreferredAudioDeviceType() const;
+    void setPreferredAudioDeviceType(const juce::String &type);
+    // 0: Main + one pair per Part. 1: Main + Sub (the hardware's 4-OUT mode): the pair after Main (channels 2-3, or
+    // the first auxiliary bus) is the dry sum of the Parts whose Output is set to Sub in the Performance tab.
+    int getOutputMode() const { return outputMode; }
+    void setOutputMode(int mode);
+    std::atomic<int> outputMode { 0 };
+    bool getMainFullMix() const { return mainFullMix; }
+    void setMainFullMix(bool enabled);
+    std::atomic<bool> mainFullMix { false };
+    juce::AudioProcessorEditor *safeActiveEditor() const; // getActiveEditor() only on the message thread, else nullptr
+    bool getMultiOutBuses() const;
+    void setMultiOutBuses(bool enabled);
+    bool getExtraPolyphony() const { return extraPolyphony; }
+    void setExtraPolyphony(bool enabled);
     void setPerformanceName(const juce::String &name);
 
     // patchInfos[] index 0..194 only (the ROM-native factory tones/rhythm-sets) - see
@@ -295,6 +375,18 @@ public:
 
     DataToSave status;
     MCU *mcu;
+    // Extra polyphony (GitHub issue #7): the JV-880's PCM chip only has 28 voices, so a second,
+    // identical engine takes every other Note On. Exists only while extraPolyphony is on AND
+    // Performance mode is active (rebuilt each time Performance mode is enabled, from a copy of
+    // `mcu`'s NVRAM and expansion ROM); freed otherwise. About 2x the CPU and 30 MB while alive.
+    MCU *mcu2 = nullptr;
+    bool extraPolyphony = false;
+    unsigned extraNoteToggle = 0;
+    std::vector<float> extraScratchL, extraScratchR;
+    // Separate outputs (GitHub issue #3): per-Part dry audio of each engine, see MCU::setSeparateParts().
+    std::vector<float> partScratch[2][8][2]; // [engine][part][L/R]
+    void rebuildExtraEngine();
+    void dropExtraEngine();
     // Zero-initialised so the nullptr checks in setStateInformation()/setCurrentProgram() (an
     // expansion index this build doesn't have that ROM loaded for - a saved DAW project on a
     // different machine, or a user patch saved while a since-removed expansion was active) see
@@ -424,8 +516,8 @@ public:
     // retro D-20-style LCD (JivSequencerRetroPanel) or piano roll (JivSequencerGridPanel). Stored
     // as the two mutually exclusive bools every host of the shared "Sequencer > Classic / Retro /
     // Grid" menu (SequencerViewMenu.h) exposes; setSequencerView() sets both at once, persists
-    // them (with the grid row height) in sequencer_view.txt - same convention as
-    // sequencer_enabled.txt - and tells the active desktop editor to swap its panel once. The
+    // them (with the grid row height) in settings.ini ([sequencer]) - same convention as
+    // the other settings - and tells the active desktop editor to swap its panel once. The
     // Android app re-reads them itself. Only ever a UI choice: all views drive the same engine.
     bool sequencerGridMode = false;
     bool sequencerRetroMode = false;
@@ -435,7 +527,7 @@ public:
     void setSequencerRetroMode(bool retro) { setSequencerView(retro ? seqview::View::retro : seqview::View::classic); }
     void setSequencerView(seqview::View view);
 
-    // Retro view settings (JivSequencerHost), persisted in sequencer_retro.txt.
+    // Retro view settings (JivSequencerHost), persisted in settings.ini.
     juce::String retroKeyBindings;
     bool retroLcdCompactMode = false;
     juce::String getRetroKeyBindings() const override { return retroKeyBindings; }
@@ -444,12 +536,16 @@ public:
     void setRetroLcdCompactMode(bool compact) override;
 
     // Heights of the keyboard and sequencer panes in the desktop editor (dragged with the bars
-    // between the panes, see VirtualJVEditor), persisted in layout_heights.txt.
+    // between the panes, see VirtualJVEditor), persisted in settings.ini ([layout]).
     static constexpr int kDefaultKeyboardPaneH = 120;
     static constexpr int kDefaultSequencerPaneH = 347;
     int keyboardPaneH = kDefaultKeyboardPaneH;
     int sequencerPaneH = kDefaultSequencerPaneH;
     void setPaneHeights(int keyboard, int sequencer);
+    // Folded/unfolded state of the keyboard and sequencer drawers, also in settings.ini ([layout]).
+    bool keyboardCollapsed = false;
+    bool sequencerCollapsed = false;
+    void setPaneCollapsed(bool keyboard, bool sequencer);
 
     int gridRowHeight = 0;
     int getGridRowHeight() const override { return gridRowHeight; }

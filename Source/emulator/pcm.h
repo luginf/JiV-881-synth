@@ -61,6 +61,11 @@ struct pcm_t {
     int accum_l;
     int accum_r;
     int rcsum[2];
+    // Dry (post-pan, pre-effects) contribution of each chip slot to the current frame, 20-bit domain like
+    // accum_l/r. Used to split the mix per Performance Part (separate outputs).
+    int slot_l[32];
+    int slot_r[32];
+    uint8_t slot_owner[32]; // Performance Part (0-7) that allocated each voice, see Pcm::PCM_Write()
 };
 
 struct MCU;
@@ -70,6 +75,7 @@ struct Pcm {
     Pcm(MCU *mcu);
 
     pcm_t pcm = {0};
+    bool partTrackingEnabled = false; // set by MCU when separate outputs are in use
     uint8_t waverom1[0x200000];
     uint8_t waverom2[0x200000];
     uint8_t waverom3[0x100000];

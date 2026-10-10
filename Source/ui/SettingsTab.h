@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <JuceHeader.h>
+#include "../JackMultiOut.h"
 #include "../PluginProcessor.h"
 
 #include "widgets/Button.h"
@@ -49,12 +50,25 @@ private:
         Chorus           = 12U,
         MasterVolume     = 13U,
         SequencerEnabled = 14U,
+        ExtraPolyphony   = 15U,
+        MultiOut         = 16U,
+        MainFullMix      = 17U,
+        OutputMode       = 18U,
     };
 
     Slider masterTuneSlider{ MasterTune, 1, 127, 1, 64, true };
     juce::Label masterTuneLabel;
     Button reverbToggle{ Reverb, "Reverb" };
     Button chorusToggle{ Chorus, "Chorus" };
+    // Second engine for 56 voices instead of 28 (GitHub issue #7); only has an effect while
+    // Performance mode is on, and costs about 2x the CPU then. See VirtualJVProcessor::mcu2.
+    // Plugin formats only: start with the 8 "Part n" stereo output buses enabled (GitHub issue #3).
+    // Part outputs are copies, the main output keeps the full mix (otherwise Parts leave the main).
+    // Separate outputs layout: one pair per Part, or Main + Sub (hardware 4-OUT style).
+    juce::ComboBox outputModeCombo;
+    Button mainFullMixToggle{ MainFullMix, "Main out = full mix" };
+    Button multiOutToggle{ MultiOut, "Part outputs on (reload plugin)" };
+    Button extraPolyphonyToggle{ ExtraPolyphony, "Extra polyphony (Performance, 2x CPU)" };
     // Plugin-side output trim, not a real JV-880 hardware/MIDI parameter (the real unit's
     // volume knob is an analog attenuator, nothing SysEx/nvram reaches) - applied as a plain
     // gain in VirtualJVProcessor::processBlock(). Session-only, like the VirtualKeyboard
@@ -73,6 +87,7 @@ private:
     juce::Label audioSettingsHeaderLabel;
     juce::Label audioSettingsUnavailableLabel;
     std::unique_ptr<juce::Component> audioDeviceSelector;
+    std::unique_ptr<DeviceTypeWatcher> deviceTypeWatcher; // remembers the chosen audio device type (JackMultiOut.h)
 
     // DSP load meter (Alan's request, 2026-09-07) - see VirtualJVProcessor::dspLoadMeasurer.
     juce::Label dspLoadLabel;

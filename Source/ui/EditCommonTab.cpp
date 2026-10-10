@@ -444,8 +444,8 @@ void EditCommonTab::sendSysexPatchNameChange()
     buf[2] = 0x10; // unit number
     buf[3] = 0x46;
     buf[4] = 0x12; // command
-    buf[5] = 0x00;
-    buf[6] = 0x08;
+    buf[5] = processor.patchEditAddrHi();
+    buf[6] = processor.patchEditAddrMid();
     buf[7] = 0x20;
     buf[8] = 0x00;
 
@@ -479,9 +479,7 @@ void EditCommonTab::sendSysexPatchNameChange()
     buf[22] = (uint8_t)checksum;
     buf[23] = 0xf7;
 
-    processor.mcuLock.enter();
-    processor.mcu->postMidiSC55(buf, 24);
-    processor.mcuLock.exit();
+    processor.postEditSysex(buf, 24);
 }
 
 void EditCommonTab::sendSysexPatchCommonParamChange(const uint8_t address, const uint8_t value)
@@ -493,8 +491,8 @@ void EditCommonTab::sendSysexPatchCommonParamChange(const uint8_t address, const
     buf[2] = 0x10; // unit number
     buf[3] = 0x46;
     buf[4] = 0x12; // command
-    buf[5] = 0x00;
-    buf[6] = 0x08;
+    buf[5] = processor.patchEditAddrHi();
+    buf[6] = processor.patchEditAddrMid();
     buf[7] = 0x20;
     buf[8] = address;
     buf[9] = value;
@@ -514,7 +512,5 @@ void EditCommonTab::sendSysexPatchCommonParamChange(const uint8_t address, const
     buf[10] = (uint8_t)checksum;
     buf[11] = 0xf7;
 
-    processor.mcuLock.enter();
-    processor.mcu->postMidiSC55(buf, 12);
-    processor.mcuLock.exit();
+    processor.postEditSysex(buf, 12);
 }

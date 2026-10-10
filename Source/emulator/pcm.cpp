@@ -33,6 +33,7 @@
  */
 #include <stdint.h>
 #include <string.h>
+#include <algorithm>
 #include <stdio.h>
 #include "mcu.h"
 #include "mcu_interrupt.h"
@@ -67,6 +68,7 @@ void Pcm::PCM_Write(uint32_t address, uint8_t data)
     address &= 0x3f;
     if (address < 0x4) // voice enable
     {
+        const uint32_t oldPending = pcm.voice_mask_pending;
         switch (address & 3)
         {
             case 0:
@@ -87,6 +89,17 @@ void Pcm::PCM_Write(uint32_t address, uint8_t data)
                 break;
         }
         pcm.voice_mask_updating = 1;
+
+        // Separate outputs: remember which Performance Part the firmware allocated each newly enabled chip
+        // voice to. JV-880 firmware: sram[0x1d2 + voice] holds Part*2 for every voice (found by searching
+        // sram for a table matching the owners seen with staggered notes on several Parts).
+        if (partTrackingEnabled)
+        {
+            const uint32_t added = pcm.voice_mask_pending & ~oldPending;
+            for (int b = 0; b < 28; b++)
+                if (added & (1u << b))
+                    pcm.slot_owner[b] = (mcu->sram[0x1d2 + b] >> 1) & 7;
+        }
     }
     else if (address >= 0x20 && address < 0x24) // wave rom
     {
@@ -445,6 +458,27 @@ inline void eram_pack(pcm_t *pcm, int addr, int val)
     pcm->eram[addr] = data;
 }
 
+// Dry sum of the chip voices owned by each Performance Part, in the same 20-bit domain as accum_l/r.
+static void post_part_samples(Pcm *self)
+{
+    int l[8] = {}, r[8] = {};
+    for (int s = 0; s < 28; s++)
+    {
+        const int o = self->pcm.slot_owner[s];
+        if (o < 8)
+        {
+            l[o] += self->pcm.slot_l[s];
+            r[o] += self->pcm.slot_r[s];
+        }
+    }
+    for (int p = 0; p < 8; p++)
+    {
+        l[p] = (int)((unsigned)(std::max(-0x80000, std::min(0x7ffff, l[p])) & ~3) << 12);
+        r[p] = (int)((unsigned)(std::max(-0x80000, std::min(0x7ffff, r[p])) & ~3) << 12);
+    }
+    self->mcu->MCU_PostPartSamples(l, r);
+}
+
 void Pcm::PCM_Update(uint64_t cycles)
 {
     int reg_slots = (pcm.config_reg_3d & 31) + 1;
@@ -481,6 +515,8 @@ void Pcm::PCM_Update(uint64_t cycles)
             tt[0] = (int)((pcm.ram1[30][2] & ~write_mask) << 12);
             tt[1] = (int)((pcm.ram1[30][4] & ~write_mask) << 12);
 
+            if (partTrackingEnabled)
+                post_part_samples(this);
             mcu->MCU_PostSample(tt);
 
             xr = ((shifter >> 0) ^ (shifter >> 1) ^ (shifter >> 7) ^ (shifter >> 12)) & 1;
@@ -507,7 +543,9 @@ void Pcm::PCM_Update(uint64_t cycles)
                 tt[0] = (int)((pcm.ram1[30][3] & ~write_mask) << 12);
                 tt[1] = (int)((pcm.ram1[30][5] & ~write_mask) << 12);
 
-                mcu->MCU_PostSample(tt);
+                if (partTrackingEnabled)
+                post_part_samples(this);
+            mcu->MCU_PostSample(tt);
             }
         }
 
@@ -1364,6 +1402,9 @@ void Pcm::PCM_Update(uint64_t cycles)
                     pcm.ram1[31][3] = addclip20(pcm.ram1[31][3], rcadd[5] >> 1, rcadd[5] & 1);
                     break;
             }
+
+            pcm.slot_l[slot & 31] = sampl >> 6;
+            pcm.slot_r[slot & 31] = sampr >> 6;
 
             int suml = addclip20(pcm.ram1[31][1], sampl >> 6, (sampl >> 5) & 1);
             int sumr = addclip20(pcm.ram1[31][3], sampr >> 6, (sampr >> 5) & 1);

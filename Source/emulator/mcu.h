@@ -379,6 +379,16 @@ struct MCU {
 
     void* resampleL = 0;
     void* resampleR = 0;
+
+    // Separate outputs (GitHub issue #3): dry audio of each Performance Part (the chip voices the firmware
+    // allocated for it, see Pcm::PCM_Write()), rendered at the same time as the main mix. Effects and
+    // unattributed voices stay in the main stream only, so main - sum(parts) is the "FX" remainder.
+    static const int kNumPartStreams = 8;
+    std::vector<float> part_buffer[kNumPartStreams][2];
+    void* resamplePart[kNumPartStreams][2] = {};
+    bool separateParts = false;
+    void setSeparateParts(bool on);
+    void MCU_PostPartSamples(const int *partL, const int *partR);
     int savedDestSampleRate = 0;
     double samplesError = 0;
     
@@ -413,7 +423,9 @@ struct MCU {
     void MCU_EncoderTrigger(int dir);
 
     int startSC55(const uint8_t* s_rom1, const uint8_t* s_rom2, const uint8_t* s_waverom1, const uint8_t* s_waverom2, const uint8_t* s_nvram);
-    void updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFrames, int destSampleRate);
+    // partL/partR: optional arrays of kNumPartStreams buffers of nFrames, filled when setSeparateParts(true).
+    void updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFrames, int destSampleRate,
+                                  float *const *partL = nullptr, float *const *partR = nullptr);
     void postMidiSC55(const uint8_t* message, int length);
     void enqueueMidiSC55(const uint8_t* message, int length, int samplePos);
     void SC55_Reset();

@@ -299,6 +299,26 @@ public:
   void mouseDrag(const juce::MouseEvent &e) override;
   void mouseUp(const juce::MouseEvent &e) override;
 
+  // Name search across every loaded bank and expansion (GitHub issue #8). While the box holds
+  // text, the results list covers the category/patch columns; clearing it brings them back.
+  juce::TextEditor searchBox;
+  struct SearchResult { int patchIndex; int group; };
+  std::vector<SearchResult> searchResults;
+
+  class SearchListModel : public juce::ListBoxModel {
+  public:
+    explicit SearchListModel(PatchBrowser &b) : browser(b) {}
+    int getNumRows() override { return (int)browser.searchResults.size(); }
+    void paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) override;
+    void selectedRowsChanged(int) override;
+    void listBoxItemClicked(int row, const juce::MouseEvent &e) override;
+  private:
+    PatchBrowser &browser;
+  };
+  SearchListModel searchListModel { *this };
+  juce::ListBox searchListBox { "Search results", &searchListModel };
+  void updateSearch();
+
   PatchesListModel *patchesListModels[maxColumnsPool];
   juce::ListBox *patchesListBoxes[maxColumnsPool];
 

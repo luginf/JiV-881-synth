@@ -1574,8 +1574,8 @@ void EditToneTab::mirrorEdit(uint32_t id, juce::Component *src)
 void EditToneTab::sendSysexPatchToneChange1Byte(uint8_t address, uint8_t value)
 {
     uint8_t data[5];
-    data[0] = 0x00;              // address MSB
-    data[1] = 0x08;              // address
+    data[0] = processor.patchEditAddrHi(); // address MSB
+    data[1] = processor.patchEditAddrMid(); // address
     data[2] = 0x28 + toneCount;  // address
     data[3] = address & 127;     // address LSB
     data[4] = value;             // data
@@ -1606,16 +1606,14 @@ void EditToneTab::sendSysexPatchToneChange1Byte(uint8_t address, uint8_t value)
     buf[10] = (uint8_t)checksum;
     buf[11] = 0xf7;
 
-    processor.mcuLock.enter();
-    processor.mcu->postMidiSC55(buf, 12);
-    processor.mcuLock.exit();
+    processor.postEditSysex(buf, 12);
 }
 
 void EditToneTab::sendSysexPatchToneChange2Byte(uint8_t address, uint8_t value)
 {
     uint8_t data[6];
-    data[0] = 0x00;                 // address MSB
-    data[1] = 0x08;                 // address
+    data[0] = processor.patchEditAddrHi(); // address MSB
+    data[1] = processor.patchEditAddrMid(); // address
     data[2] = 0x28 + toneCount;     // address
     data[3] = address & 127;        // address LSB
     data[4] = (value & 0xf0) >> 4;  // data
@@ -1647,7 +1645,5 @@ void EditToneTab::sendSysexPatchToneChange2Byte(uint8_t address, uint8_t value)
     buf[11] = (uint8_t)checksum;
     buf[12] = 0xf7;
 
-    processor.mcuLock.enter();
-    processor.mcu->postMidiSC55(buf, 13);
-    processor.mcuLock.exit();
-}
+    processor.postEditSysex(buf, 13);
+}

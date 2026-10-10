@@ -87,6 +87,7 @@ private:
     // this: its juce::ListBoxes already scroll internally at whatever size they're given.
     static constexpr int kTabAreaW = 820;
     static constexpr int kTabAreaH = 800;
+    static constexpr int kPerformanceTabH = 1000;
 
     VirtualJVProcessor& processor;
 

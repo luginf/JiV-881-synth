@@ -63,6 +63,9 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     };
     keyboardPaneH = processor.keyboardPaneH;
     sequencerPaneH = processor.sequencerPaneH;
+    keyboardCollapsed = processor.keyboardCollapsed;
+    sequencerCollapsed = processor.sequencerCollapsed;
+    virtualKeyboard.setVisible(!keyboardCollapsed);
     addAndMakeVisible(bottomGrip);
 
     keyboardHandle.onDragStart = [this] { dragStartWindowH = getHeight(); };
@@ -99,6 +102,7 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
         keyboardCollapsed = !keyboardCollapsed;
         keyboardHandle.setExpanded(!keyboardCollapsed);
         virtualKeyboard.setVisible(!keyboardCollapsed);
+        processor.setPaneCollapsed(keyboardCollapsed, sequencerCollapsed);
         resized();
     };
 
@@ -117,6 +121,7 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
         sequencerCollapsed = !sequencerCollapsed;
         sequencerHandle.setExpanded(!sequencerCollapsed);
         if (auto *view = activeSequencerView()) view->setVisible(!sequencerCollapsed);
+        processor.setPaneCollapsed(keyboardCollapsed, sequencerCollapsed);
         resized();
     };
 
@@ -136,6 +141,8 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
         vp.setScrollBarsShown(true, false);
     };
     pinInViewport(performanceViewport, performanceTab);
+    // The Performance tab carries the Part details and Common sections below the 8 Part rows.
+    performanceTab.setSize(kTabAreaW, kPerformanceTabH);
     pinInViewport(editCommonViewport, editCommonTab);
     editTone1Tab.setLinkedTabs({ &editTone2Tab, &editTone3Tab, &editTone4Tab });
     pinInViewport(editTone1Viewport, editTone1Tab);
@@ -165,7 +172,11 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     setResizable(true, true);
     setResizeLimits(820, 200, 6000, 4000);
 
-    setSize(820, 900 + keyboardPaneH + kHandleH);
+    // A plugin window opens inside a host that has its own chrome and often cannot resize it (Ardour's VST3 window
+    // opened taller than the screen, with the corner grip off-screen): start much shorter there. The tabs scroll
+    // when they do not fit, and the window can still be enlarged.
+    const bool isStandalone = processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone;
+    setSize(820, (isStandalone ? 900 : 640) + keyboardPaneH + kHandleH);
 
     // ROMs not found (Alan's report, 2026-09-08: this used to be a blocking OS alert dialog and
     // an otherwise-empty window - no visible path forward besides guessing the app-data folder

@@ -1135,6 +1135,40 @@ void MCU::MCU_PostSample(int *sample)
     sample_write_ptr = (sample_write_ptr + 1) % audio_buffer_size;
 }
 
+void MCU::setSeparateParts(bool on)
+{
+    if (on == separateParts)
+        return;
+    if (on) {
+        for (int p = 0; p < kNumPartStreams; p++)
+            for (int c = 0; c < 2; c++)
+                part_buffer[p][c].assign(audio_buffer_size, 0.f);
+        memset(pcm.pcm.slot_l, 0, sizeof(pcm.pcm.slot_l));
+        memset(pcm.pcm.slot_r, 0, sizeof(pcm.pcm.slot_r));
+        memset(pcm.pcm.slot_owner, 0xff, sizeof(pcm.pcm.slot_owner));
+        savedDestSampleRate = 0; // reopen every resampler, including the new ones, at the next block
+        pcm.partTrackingEnabled = true;
+        separateParts = true;
+    } else {
+        separateParts = false;
+        pcm.partTrackingEnabled = false;
+        for (int p = 0; p < kNumPartStreams; p++)
+            for (int c = 0; c < 2; c++) {
+                if (resamplePart[p][c]) resample_close(resamplePart[p][c]);
+                resamplePart[p][c] = nullptr;
+                std::vector<float>().swap(part_buffer[p][c]);
+            }
+    }
+}
+
+void MCU::MCU_PostPartSamples(const int *partL, const int *partR)
+{
+    for (int p = 0; p < kNumPartStreams; p++) {
+        part_buffer[p][0][sample_write_ptr] = partL[p] / 2147483648.0;
+        part_buffer[p][1][sample_write_ptr] = partR[p] / 2147483648.0;
+    }
+}
+
 void MCU::MCU_GA_SetGAInt(int line, int value)
 {
     // guesswork
@@ -1298,7 +1332,8 @@ uint64_t MCU::MCU_NextEventCycles(void)
     return best;
 }
 
-void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFrames, int destSampleRate) {
+void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFrames, int destSampleRate,
+                                   float *const *partL, float *const *partR) {
     double renderBufferFramesFloat = (double)nFrames / destSampleRate * 64000;
     auto renderBufferFrames = (unsigned int)std::ceil(renderBufferFramesFloat);
     double currentError = renderBufferFrames - renderBufferFramesFloat;
@@ -1424,6 +1459,12 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
         if (resampleR) resample_close(resampleR);
         resampleL = resample_open(1, ratio, ratio);
         resampleR = resample_open(1, ratio, ratio);
+        if (separateParts)
+            for (int p = 0; p < kNumPartStreams; p++)
+                for (int c = 0; c < 2; c++) {
+                    if (resamplePart[p][c]) resample_close(resamplePart[p][c]);
+                    resamplePart[p][c] = resample_open(1, ratio, ratio);
+                }
     }
 
     int inUsedL = 0;
@@ -1433,6 +1474,17 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
 
     outL = resample_process(resampleL, ratio, sample_buffer_l, renderBufferFrames, false, &inUsedL, dataL, nFrames);
     outR = resample_process(resampleR, ratio, sample_buffer_r, renderBufferFrames, false, &inUsedR, dataR, nFrames);
+
+    if (separateParts) {
+        for (int p = 0; p < kNumPartStreams; p++)
+            for (int c = 0; c < 2; c++) {
+                float *out = c == 0 ? (partL ? partL[p] : nullptr) : (partR ? partR[p] : nullptr);
+                int used = 0;
+                if (out != nullptr && resamplePart[p][c] != nullptr)
+                    resample_process(resamplePart[p][c], ratio, part_buffer[p][c].data(), renderBufferFrames, false, &used, out, nFrames);
+
+            }
+    }
 
     // The resampler was handed the first renderBufferFrames samples. Anything
     // past that is the odd-length overshoot described at the top of this
@@ -1450,6 +1502,10 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
         memmove(sample_buffer_r, sample_buffer_r + renderBufferFrames,
                 leftover * sizeof(sample_buffer_r[0]));
     }
+    if (leftover > 0 && separateParts)
+        for (int p = 0; p < kNumPartStreams; p++)
+            for (int c = 0; c < 2; c++)
+                memmove(part_buffer[p][c].data(), part_buffer[p][c].data() + renderBufferFrames, leftover * sizeof(float));
     sample_write_ptr = (int)leftover;
 
     samplesError += currentError;

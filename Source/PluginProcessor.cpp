@@ -7,6 +7,8 @@
 */
 
 #include "PluginProcessor.h"
+#include <map>
+#include <tuple>
 #include "SysexImporter.h"
 #include "PluginEditor.h"
 #include "sequencer/JivSequencerSongsFile.h"
@@ -41,69 +43,162 @@ juce::File appDataBaseDir() {
   return newDir;
 }
 
-juce::File keyboardSettingsFile() {
-  return appDataBaseDir().getChildFile("keyboard_settings.xml");
+// --- User settings: one settings.ini in the app-data folder -----------------------------------
+// [section] / key=value lines. Always at this fixed location (never inside a folder the settings
+// themselves name), so it stays findable even when e.g. the ROM folder it records has gone.
+// Before this file existed each setting had its own small file (display_mode.txt, rom_folder.txt,
+// sequencer_enabled.txt, extra_polyphony.txt, sequencer_view.txt/sequencer_grid.txt,
+// layout_heights.txt, sequencer_retro.txt, keyboard_settings.xml): the first read of a missing
+// settings.ini imports them, then deletes them.
+using IniData = std::map<juce::String, std::map<juce::String, juce::String>>;
+
+juce::File settingsIniFile() { return appDataBaseDir().getChildFile("settings.ini"); }
+
+void writeIni(const IniData &data) {
+  juce::String text = "; JiV-881 settings\n";
+  for (auto &section : data) {
+    if (section.second.empty())
+      continue;
+    text << "\n[" << section.first << "]\n";
+    for (auto &kv : section.second)
+      text << kv.first << "=" << kv.second.replace("\n", " ") << "\n";
+  }
+  auto file = settingsIniFile();
+  file.getParentDirectory().createDirectory();
+  file.replaceWithText(text);
 }
 
-void loadPersistedKeyboardSettings(bool &pcInput, int &pcLayout) {
-  auto file = keyboardSettingsFile();
-  if (!file.existsAsFile())
-    return;
+void importLegacySettings(IniData &d) {
+  auto dir = appDataBaseDir();
+  auto text = [&](const char *name) {
+    auto f = dir.getChildFile(name);
+    return f.existsAsFile() ? f.loadFileAsString().trim() : juce::String();
+  };
+  auto has = [&](const char *name) { return dir.getChildFile(name).existsAsFile(); };
+  auto flag = [](const juce::String &v) { return v.getIntValue() != 0 ? "1" : "0"; };
 
-  if (auto xml = juce::XmlDocument::parse(file)) {
-    pcInput = xml->getBoolAttribute("pcInput", pcInput);
-    pcLayout = xml->getIntAttribute("pcLayout", pcLayout);
+  if (has("display_mode.txt"))
+    d["display"]["mode"] = juce::String(text("display_mode.txt").getIntValue());
+  if (has("rom_folder.txt") && text("rom_folder.txt").isNotEmpty())
+    d["rom"]["folder"] = text("rom_folder.txt");
+  if (has("sequencer_enabled.txt"))
+    d["sequencer"]["enabled"] = flag(text("sequencer_enabled.txt"));
+  if (has("extra_polyphony.txt"))
+    d["audio"]["extra_polyphony"] = flag(text("extra_polyphony.txt"));
+
+  // Sequencer view: "<view> <rowHeight>"; the oldest build wrote sequencer_grid.txt, "<0|1> <rowHeight>".
+  const char *viewFile = has("sequencer_view.txt") ? "sequencer_view.txt" : has("sequencer_grid.txt") ? "sequencer_grid.txt" : nullptr;
+  if (viewFile != nullptr) {
+    auto tokens = juce::StringArray::fromTokens(text(viewFile), " ", "");
+    const int view = tokens[0].getIntValue();
+    d["sequencer"]["view"] = juce::String(std::string(viewFile) == "sequencer_grid.txt" ? (view != 0 ? 2 : 0) : view);
+    d["sequencer"]["grid_row_height"] = juce::String(tokens[1].getIntValue());
+  }
+  if (has("layout_heights.txt")) {
+    auto tokens = juce::StringArray::fromTokens(text("layout_heights.txt"), " ", "");
+    if (tokens.size() >= 2) {
+      d["layout"]["keyboard_height"] = juce::String(tokens[0].getIntValue());
+      d["layout"]["sequencer_height"] = juce::String(tokens[1].getIntValue());
+    }
+    if (tokens.size() >= 4) {
+      d["layout"]["keyboard_collapsed"] = flag(tokens[2]);
+      d["layout"]["sequencer_collapsed"] = flag(tokens[3]);
+    }
+  }
+  if (has("sequencer_retro.txt")) {
+    juce::StringArray lines;
+    lines.addLines(dir.getChildFile("sequencer_retro.txt").loadFileAsString());
+    d["sequencer"]["retro_lcd_compact"] = flag(lines[0]);
+    d["sequencer"]["retro_key_bindings"] = lines[1].trim();
+  }
+  if (has("keyboard_settings.xml")) {
+    if (auto xml = juce::XmlDocument::parse(dir.getChildFile("keyboard_settings.xml"))) {
+      d["keyboard"]["pc_input"] = xml->getBoolAttribute("pcInput", false) ? "1" : "0";
+      d["keyboard"]["pc_layout"] = juce::String(xml->getIntAttribute("pcLayout", 0));
+    }
   }
 }
 
-void savePersistedKeyboardSettings(bool pcInput, int pcLayout) {
-  juce::XmlElement xml("KEYBOARD_SETTINGS");
-  xml.setAttribute("pcInput", pcInput);
-  xml.setAttribute("pcLayout", pcLayout);
-
-  auto file = keyboardSettingsFile();
-  file.getParentDirectory().createDirectory();
-  xml.writeTo(file);
+IniData readIni() {
+  IniData data;
+  auto file = settingsIniFile();
+  if (!file.existsAsFile()) {
+    importLegacySettings(data);
+    if (!data.empty()) {
+      writeIni(data);
+      for (auto *name : {"display_mode.txt", "rom_folder.txt", "sequencer_enabled.txt", "extra_polyphony.txt",
+                         "sequencer_view.txt", "sequencer_grid.txt", "layout_heights.txt", "sequencer_retro.txt",
+                         "keyboard_settings.xml"})
+        appDataBaseDir().getChildFile(name).deleteFile();
+    }
+    return data;
+  }
+  juce::StringArray lines;
+  lines.addLines(file.loadFileAsString());
+  juce::String section;
+  for (auto line : lines) {
+    line = line.trim();
+    if (line.isEmpty() || line.startsWithChar(';') || line.startsWithChar('#'))
+      continue;
+    if (line.startsWithChar('[') && line.endsWithChar(']')) {
+      section = line.substring(1, line.length() - 1).trim();
+      continue;
+    }
+    const int eq = line.indexOfChar('=');
+    if (eq > 0)
+      data[section][line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+  }
+  return data;
 }
 
-// Where the ROM folder override (see rom.h's setRomsDirectoryOverride()) is persisted -
-// deliberately always at this fixed default app-data location regardless of what the override
-// itself points to (same reasoning as keyboardSettingsFile()), so it's always findable even if
-// the folder it names has since moved, been deleted, or was never valid to begin with.
-juce::File romFolderSettingsFile() {
-  return appDataBaseDir().getChildFile("rom_folder.txt");
+bool iniHas(const IniData &d, const char *section, const char *key) {
+  auto s = d.find(section);
+  return s != d.end() && s->second.count(key) != 0;
+}
+
+juce::String iniGet(const IniData &d, const char *section, const char *key, const juce::String &fallback = {}) {
+  auto s = d.find(section);
+  if (s == d.end())
+    return fallback;
+  auto k = s->second.find(key);
+  return k == s->second.end() ? fallback : k->second;
+}
+
+// Read-modify-write the whole (small) file, so several instances in one DAW don't clobber each
+// other's unrelated keys.
+void iniUpdate(std::initializer_list<std::tuple<const char *, const char *, juce::String>> entries) {
+  auto data = readIni();
+  for (auto &e : entries)
+    data[std::get<0>(e)][std::get<1>(e)] = std::get<2>(e);
+  writeIni(data);
+}
+
+void loadPersistedKeyboardSettings(bool &pcInput, int &pcLayout) {
+  auto d = readIni();
+  pcInput = iniGet(d, "keyboard", "pc_input", pcInput ? "1" : "0").getIntValue() != 0;
+  pcLayout = iniGet(d, "keyboard", "pc_layout", juce::String(pcLayout)).getIntValue();
+}
+
+void savePersistedKeyboardSettings(bool pcInput, int pcLayout) {
+  iniUpdate({{"keyboard", "pc_input", pcInput ? "1" : "0"}, {"keyboard", "pc_layout", juce::String(pcLayout)}});
 }
 
 juce::File loadPersistedRomFolderOverride() {
-  auto file = romFolderSettingsFile();
-  if (!file.existsAsFile())
-    return {};
-  auto path = file.loadFileAsString().trim();
+  auto path = iniGet(readIni(), "rom", "folder").trim();
   return path.isEmpty() ? juce::File{} : juce::File(path);
 }
 
 void savePersistedRomFolderOverride(const juce::File &dir) {
-  auto file = romFolderSettingsFile();
-  if (dir == juce::File{}) {
-    file.deleteFile();
-    return;
-  }
-  file.getParentDirectory().createDirectory();
-  file.replaceWithText(dir.getFullPathName());
-}
-
-// Display mode persistence (Alan's request, 2026-09-08) - same fixed-location-regardless-of-
-// content reasoning as romFolderSettingsFile() above (not that this one's content ever names a
-// path, but consistency).
-juce::File displayModeSettingsFile() {
-  return appDataBaseDir().getChildFile("display_mode.txt");
+  auto data = readIni();
+  if (dir == juce::File{})
+    data["rom"].erase("folder");
+  else
+    data["rom"]["folder"] = dir.getFullPathName();
+  writeIni(data);
 }
 
 VirtualJVProcessor::DisplayMode loadPersistedDisplayMode() {
-  auto file = displayModeSettingsFile();
-  if (!file.existsAsFile())
-    return VirtualJVProcessor::DisplayMode::LcdOnly;
-  auto n = file.loadFileAsString().trim().getIntValue();
+  const int n = iniGet(readIni(), "display", "mode", "0").getIntValue();
   if (n == (int)VirtualJVProcessor::DisplayMode::PanelCompact)
     return VirtualJVProcessor::DisplayMode::PanelCompact;
   if (n == (int)VirtualJVProcessor::DisplayMode::PanelFull)
@@ -111,117 +206,149 @@ VirtualJVProcessor::DisplayMode loadPersistedDisplayMode() {
   return VirtualJVProcessor::DisplayMode::LcdOnly;
 }
 
-// Sequencer enable/disable persistence (Alan's request, 2026-09-09 - "il faudra pouvoir le
-// supprimer") - same fixed-location-regardless-of-content reasoning as the settings files
-// above.
-juce::File sequencerEnabledSettingsFile() {
-  return appDataBaseDir().getChildFile("sequencer_enabled.txt");
+void savePersistedDisplayMode(VirtualJVProcessor::DisplayMode mode) {
+  iniUpdate({{"display", "mode", juce::String((int)mode)}});
 }
 
-bool loadPersistedSequencerEnabled() {
-  auto file = sequencerEnabledSettingsFile();
-  return file.existsAsFile() && file.loadFileAsString().trim().getIntValue() != 0;
-}
+bool loadPersistedSequencerEnabled() { return iniGet(readIni(), "sequencer", "enabled", "0").getIntValue() != 0; }
 
 void savePersistedSequencerEnabled(bool enabled) {
-  auto file = sequencerEnabledSettingsFile();
-  file.getParentDirectory().createDirectory();
-  file.replaceWithText(enabled ? "1" : "0");
+  iniUpdate({{"sequencer", "enabled", enabled ? "1" : "0"}});
 }
 
-// Sequencer view choice + the grid view's row height - one small "<view> <rowHeight>" file at
-// the same fixed location as the settings above, <view> = seqview::View (0 classic, 1 retro,
-// 2 grid). An earlier build wrote "sequencer_grid.txt" with "<0|1> <rowHeight>" (1 = grid only);
-// it is read as a fallback so that choice survives.
-juce::File sequencerViewSettingsFile() {
-  return appDataBaseDir().getChildFile("sequencer_view.txt");
+// Extra polyphony on/off (GitHub issue #7).
+bool loadPersistedExtraPolyphony() {
+  return iniGet(readIni(), "audio", "extra_polyphony", "0").getIntValue() != 0;
 }
 
+void savePersistedExtraPolyphony(bool enabled) {
+  iniUpdate({{"audio", "extra_polyphony", enabled ? "1" : "0"}});
+}
+
+// Whether the plugin's "Part n" output buses start enabled (GitHub issue #3). Read when the plugin is created, so a
+// change only applies to instances created afterwards.
+bool loadPersistedMultiOut() {
+  return iniGet(readIni(), "audio", "multi_out", "0").getIntValue() != 0;
+}
+
+void savePersistedMultiOut(bool enabled) {
+  iniUpdate({{"audio", "multi_out", enabled ? "1" : "0"}});
+}
+
+// Separate outputs layout: 0 = one pair per Part, 1 = Main + Sub like the hardware's "4 OUT" mode.
+int loadPersistedOutputMode() {
+  return iniGet(readIni(), "audio", "output_mode", "0").getIntValue() != 0 ? 1 : 0;
+}
+
+void savePersistedOutputMode(int mode) {
+  iniUpdate({{"audio", "output_mode", juce::String(mode)}});
+}
+
+// Audio device type chosen in the Standalone ("ALSA", "JACK", our own JACK type...), restored at the next launch.
+juce::String loadPersistedAudioDeviceType() {
+  return iniGet(readIni(), "audio", "device_type", "");
+}
+
+void savePersistedAudioDeviceType(const juce::String &type) {
+  iniUpdate({{"audio", "device_type", type}});
+}
+
+// Main output keeps the full mix, Parts copied to their own outputs (instead of being taken out of the main).
+bool loadPersistedMainFullMix() {
+  return iniGet(readIni(), "audio", "main_full_mix", "0").getIntValue() != 0;
+}
+
+void savePersistedMainFullMix(bool enabled) {
+  iniUpdate({{"audio", "main_full_mix", enabled ? "1" : "0"}});
+}
+
+// Sequencer view (seqview::View: 0 classic, 1 retro, 2 grid) and the grid view's row height.
 void loadPersistedSequencerView(bool &gridMode, bool &retroMode, int &rowHeight) {
-  auto file = sequencerViewSettingsFile();
-  bool legacy = false;
-  if (!file.existsAsFile()) {
-    file = appDataBaseDir().getChildFile("sequencer_grid.txt");
-    legacy = true;
-    if (!file.existsAsFile())
-      return;
-  }
-  auto tokens = juce::StringArray::fromTokens(file.loadFileAsString().trim(), " ", "");
-  const int view = tokens[0].getIntValue();
-  if (legacy) {
-    gridMode = view != 0;
-    retroMode = false;
-  } else {
-    retroMode = view == (int)seqview::View::retro;
-    gridMode = view == (int)seqview::View::grid;
-  }
-  rowHeight = juce::jlimit(0, 200, tokens[1].getIntValue());
+  auto d = readIni();
+  if (!iniHas(d, "sequencer", "view"))
+    return;
+  const int view = iniGet(d, "sequencer", "view").getIntValue();
+  retroMode = view == (int)seqview::View::retro;
+  gridMode = view == (int)seqview::View::grid;
+  rowHeight = juce::jlimit(0, 200, iniGet(d, "sequencer", "grid_row_height", "0").getIntValue());
 }
 
 void savePersistedSequencerView(bool gridMode, bool retroMode, int rowHeight) {
-  auto file = sequencerViewSettingsFile();
-  file.getParentDirectory().createDirectory();
   const auto view = retroMode ? seqview::View::retro : gridMode ? seqview::View::grid : seqview::View::classic;
-  file.replaceWithText(juce::String((int)view) + " " + juce::String(rowHeight));
+  iniUpdate({{"sequencer", "view", juce::String((int)view)}, {"sequencer", "grid_row_height", juce::String(rowHeight)}});
 }
 
-// Keyboard and sequencer pane heights: "<keyboard> <sequencer>", clamped by the editor's own limits.
-juce::File paneHeightsSettingsFile() {
-  return appDataBaseDir().getChildFile("layout_heights.txt");
+// Keyboard and sequencer pane heights and folded state, clamped by the editor's own limits.
+void loadPersistedPaneHeights(int &keyboard, int &sequencer, bool &keyboardCollapsed,
+                              bool &sequencerCollapsed) {
+  auto d = readIni();
+  if (iniHas(d, "layout", "keyboard_height"))
+    keyboard = juce::jlimit(40, 400, iniGet(d, "layout", "keyboard_height").getIntValue());
+  if (iniHas(d, "layout", "sequencer_height"))
+    sequencer = juce::jlimit(120, 900, iniGet(d, "layout", "sequencer_height").getIntValue());
+  keyboardCollapsed = iniGet(d, "layout", "keyboard_collapsed", keyboardCollapsed ? "1" : "0").getIntValue() != 0;
+  sequencerCollapsed = iniGet(d, "layout", "sequencer_collapsed", sequencerCollapsed ? "1" : "0").getIntValue() != 0;
 }
 
-void loadPersistedPaneHeights(int &keyboard, int &sequencer) {
-  auto file = paneHeightsSettingsFile();
-  if (!file.existsAsFile())
-    return;
-  auto tokens = juce::StringArray::fromTokens(file.loadFileAsString().trim(), " ", "");
-  if (tokens.size() < 2)
-    return;
-  keyboard = juce::jlimit(40, 400, tokens[0].getIntValue());
-  sequencer = juce::jlimit(120, 900, tokens[1].getIntValue());
+void savePersistedPaneHeights(int keyboard, int sequencer, bool keyboardCollapsed,
+                              bool sequencerCollapsed) {
+  iniUpdate({{"layout", "keyboard_height", juce::String(keyboard)},
+             {"layout", "sequencer_height", juce::String(sequencer)},
+             {"layout", "keyboard_collapsed", keyboardCollapsed ? "1" : "0"},
+             {"layout", "sequencer_collapsed", sequencerCollapsed ? "1" : "0"}});
 }
 
-void savePersistedPaneHeights(int keyboard, int sequencer) {
-  auto file = paneHeightsSettingsFile();
-  file.getParentDirectory().createDirectory();
-  file.replaceWithText(juce::String(keyboard) + " " + juce::String(sequencer));
-}
-
-// Retro view's own settings: line 1 = LCD compact flag (0/1), line 2 = encoded key bindings.
-juce::File sequencerRetroSettingsFile() {
-  return appDataBaseDir().getChildFile("sequencer_retro.txt");
-}
-
+// Retro view's own settings: LCD compact flag and encoded key bindings.
 void loadPersistedSequencerRetro(bool &compact, juce::String &bindings) {
-  auto file = sequencerRetroSettingsFile();
-  if (!file.existsAsFile())
-    return;
-  juce::StringArray lines;
-  lines.addLines(file.loadFileAsString());
-  compact = lines[0].trim().getIntValue() != 0;
-  bindings = lines[1].trim();
+  auto d = readIni();
+  compact = iniGet(d, "sequencer", "retro_lcd_compact", compact ? "1" : "0").getIntValue() != 0;
+  bindings = iniGet(d, "sequencer", "retro_key_bindings", bindings);
 }
 
 void savePersistedSequencerRetro(bool compact, const juce::String &bindings) {
-  auto file = sequencerRetroSettingsFile();
-  file.getParentDirectory().createDirectory();
-  file.replaceWithText(juce::String(compact ? 1 : 0) + "\n" + bindings);
-}
-
-void savePersistedDisplayMode(VirtualJVProcessor::DisplayMode mode) {
-  auto file = displayModeSettingsFile();
-  file.getParentDirectory().createDirectory();
-  file.replaceWithText(juce::String((int)mode));
+  iniUpdate({{"sequencer", "retro_lcd_compact", compact ? "1" : "0"}, {"sequencer", "retro_key_bindings", bindings}});
 }
 } // namespace
 
 //==============================================================================
+// getActiveEditor() asserts (and a Debug build then crashes) when called off the message thread, which hosts such
+// as Ardour do for state/program changes. Without an editor to update from here, the editor reads the processor's
+// state itself when it is next created or refreshed.
+juce::AudioProcessorEditor *VirtualJVProcessor::safeActiveEditor() const {
+  if (!juce::MessageManager::getInstance()->isThisTheMessageThread())
+    return nullptr;
+  return getActiveEditor();
+}
+
+juce::AudioProcessor::BusesProperties VirtualJVProcessor::makeBusesProperties() {
+  // Standalone never starts with them on (it routes Parts through a multi-channel main bus instead).
+  auto stereo = juce::AudioChannelSet::stereo();
+  // The Standalone has no auxiliary buses at all: its player only ever offers ONE output bus to the processor, and
+  // JUCE rejects any layout whose bus count differs from ours, silently falling back to stereo (every device channel
+  // then carried the same copy of the main mix). Its Parts go through a multi-channel main bus instead.
+  if (juce::PluginHostType::getPluginLoadedAs() == juce::AudioProcessor::wrapperType_Standalone)
+    // ...and a DISABLED input bus: the player always hands over a layout with one input bus entry, and JUCE rejects it
+    // when our input bus count differs (0 vs 1). Disabled, it adds no input channel and no "input muted" notice.
+    return BusesProperties().withInput("Input", stereo, false).withOutput("Output", stereo, true);
+
+  const bool partBusesOn = loadPersistedMultiOut();
+  return BusesProperties()
+      .withOutput("Output", stereo, true)
+      .withOutput("Part 1", stereo, partBusesOn)
+      .withOutput("Part 2", stereo, partBusesOn)
+      .withOutput("Part 3", stereo, partBusesOn)
+      .withOutput("Part 4", stereo, partBusesOn)
+      .withOutput("Part 5", stereo, partBusesOn)
+      .withOutput("Part 6", stereo, partBusesOn)
+      .withOutput("Part 7", stereo, partBusesOn)
+      .withOutput("Part 8 (Rhythm)", stereo, partBusesOn);
+}
+
 VirtualJVProcessor::VirtualJVProcessor()
     : AudioProcessor(
           // Output only: this is a synth with no audio input, and an input bus makes the Standalone wrapper
           // mute the input at first launch ("audio input is muted to avoid feedback loop").
-          BusesProperties()
-              .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
+          makeBusesProperties()) {
 
   loadPersistedKeyboardSettings(keyboardPcInput, keyboardPcLayout);
   displayMode = loadPersistedDisplayMode();
@@ -256,9 +383,13 @@ VirtualJVProcessor::VirtualJVProcessor()
   if (wrapperType == juce::AudioProcessor::wrapperType_Standalone) {
     sequencerEnabled = loadPersistedSequencerEnabled();
     loadPersistedSequencerView(sequencerGridMode, sequencerRetroMode, gridRowHeight);
-    loadPersistedPaneHeights(keyboardPaneH, sequencerPaneH);
+    loadPersistedPaneHeights(keyboardPaneH, sequencerPaneH, keyboardCollapsed, sequencerCollapsed);
     loadPersistedSequencerRetro(retroLcdCompactMode, retroKeyBindings);
   }
+
+  extraPolyphony = loadPersistedExtraPolyphony();
+  mainFullMix = loadPersistedMainFullMix();
+  outputMode = loadPersistedOutputMode();
 
   attemptLoadRoms();
 
@@ -905,6 +1036,314 @@ bool VirtualJVProcessor::attemptLoadRoms() {
 
   loadPerformanceSessionState();
 
+  // GitHub issue #7: extra polyphony. Plays a 14-note chord of a sustained patch through the real
+  // processBlock() with the second engine off then on and prints the RMS of each.
+  if (std::getenv("JV880_SELFTEST_POLY")) {
+    setRateAndBufferSizeDetails(44100.0, 512);
+    prepareToPlay(44100.0, 512);
+    juce::AudioBuffer<float> buf(2, 512);
+    juce::MidiBuffer midi;
+    auto runMs = [&](int ms) {
+      double sum = 0;
+      long n = 0;
+      for (int done = 0; done < 44100 * ms / 1000; done += 512) {
+        buf.clear();
+        processBlock(buf, midi);
+        midi.clear();
+        for (int i = 0; i < 512; i++) { sum += buf.getSample(0, i) * buf.getSample(0, i); n++; }
+      }
+      return std::sqrt(sum / std::max<long>(n, 1));
+    };
+    runMs(2000);
+    sendPatchToPerformancePart(128, 0); // "JV Strings"
+    setPerformancePartParams(0, 1, 127, 64, true);
+    setPerformanceModeEnabled(true);
+    runMs(3000);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0);
+    runMs(500);
+    std::fprintf(stderr, "[selftest-poly] single note rms=%.4f\n", runMs(500));
+    midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    runMs(3000);
+    for (int pass = 0; pass < 3; pass++) {
+      if (pass == 1) {
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        setExtraPolyphony(true);
+        std::fprintf(stderr, "[selftest-poly] engine 2 built in %.0f ms\n", juce::Time::getMillisecondCounterHiRes() - t0);
+        runMs(500);
+      } else if (pass == 2) {
+        setExtraPolyphony(false);
+        runMs(500);
+      }
+      for (int n = 0; n < 14; n++) midi.addEvent(juce::MidiMessage::noteOn(1, 40 + n * 2, (juce::uint8)100), 0);
+      runMs(1500);
+      std::fprintf(stderr, "[selftest-poly] extra=%d mcu2=%d rms(14-note chord, 1.5s)=%.4f\n", pass == 1, mcu2 != nullptr, runMs(500));
+      for (int n = 0; n < 14; n++) midi.addEvent(juce::MidiMessage::noteOff(1, 40 + n * 2), 0);
+      runMs(4000);
+    }
+    std::exit(0);
+  }
+
+  // GitHub issue #3, end to end: real processBlock() with an 18-channel main bus (main + 8 Part stereo pairs).
+  if (std::getenv("JV880_SELFTEST_SEPOUT")) {
+    const int sampleRate = 44100, blockFrames = 512;
+    {
+      // The shape the Standalone player offers: one (empty) input bus list and ONE output bus.
+      BusesLayout asPlayer{ { juce::AudioChannelSet::canonicalChannelSet(0) }, { juce::AudioChannelSet::canonicalChannelSet(9) } };
+      std::fprintf(stderr, "[sepout] player-style 9-channel layout accepted=%d (buses: %d in, %d out, input channels %d)\n", (int)checkBusesLayoutSupported(asPlayer), getBusCount(true), getBusCount(false), getTotalNumInputChannels());
+    }
+    BusesLayout lay = getBusesLayout();
+    lay.outputBuses.getReference(0) = juce::AudioChannelSet::discreteChannels(18);
+    std::fprintf(stderr, "[sepout] layout supported=%d set=%d\n", (int)isBusesLayoutSupported(lay), (int)setBusesLayout(lay));
+    setRateAndBufferSizeDetails(sampleRate, blockFrames);
+    prepareToPlay(sampleRate, blockFrames);
+    juce::AudioBuffer<float> buf(18, blockFrames);
+    juce::MidiBuffer midi;
+    auto run = [&](int ms, double *e) {
+      for (int c = 0; c < 9; c++) e[c] = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += blockFrames) {
+        buf.clear();
+        processBlock(buf, midi);
+        midi.clear();
+        for (int c = 0; c < 9; c++)
+          for (int i = 0; i < blockFrames; i++) e[c] += buf.getSample(2 * c, i) * buf.getSample(2 * c, i);
+      }
+    };
+    double e[9];
+    run(2500, e);
+    for (int i = 0; i < kNumPerformanceParts - 1; i++) {
+      sendPatchToPerformancePart(i == 0 ? 0 : 1 + i, i);
+      setPerformancePartParams(i, i + 1, 100, 64, true);
+    }
+    setPerformanceModeEnabled(true);
+    run(1500, e);
+    for (int k : {1, 4}) {
+      midi.addEvent(juce::MidiMessage::noteOn(k + 1, 60, (juce::uint8)100), 0);
+      run(800, e);
+      std::fprintf(stderr, "[sepout] note on Part %d, energies main/p1..p8:", k + 1);
+      for (int c = 0; c < 9; c++) std::fprintf(stderr, " %.3f", e[c]);
+      std::fprintf(stderr, "\n");
+      midi.addEvent(juce::MidiMessage::noteOff(k + 1, 60), 0);
+      run(3000, e);
+    }
+    // Main + Sub mode: Part 2 set to Sub must show up on channels 2-3 and leave the main.
+    performanceParts[1].outputSelect = 1;
+    applyPerformancePart(1);
+    setOutputMode(1);
+    run(500, e);
+    for (int k : {1, 4}) {
+      midi.addEvent(juce::MidiMessage::noteOn(k + 1, 60, (juce::uint8)100), 0);
+      run(800, e);
+      std::fprintf(stderr, "[sepout] SUB mode, note on Part %d (Part 2 = Sub), energies main/ch2-3/ch4-5/...:", k + 1);
+      for (int c = 0; c < 4; c++) std::fprintf(stderr, " %.3f", e[c]);
+      std::fprintf(stderr, "\n");
+      midi.addEvent(juce::MidiMessage::noteOff(k + 1, 60), 0);
+      run(3000, e);
+    }
+    setOutputMode(0);
+    // plain stereo again: separation must switch off cleanly
+    BusesLayout stereo = getBusesLayout();
+    stereo.outputBuses.getReference(0) = juce::AudioChannelSet::stereo();
+    std::fprintf(stderr, "[sepout] back to stereo: set=%d\n", (int)setBusesLayout(stereo));
+    prepareToPlay(sampleRate, blockFrames);
+    juce::AudioBuffer<float> sbuf(2, blockFrames);
+    midi.addEvent(juce::MidiMessage::noteOn(2, 60, (juce::uint8)100), 0);
+    double se = 0;
+    for (int done = 0; done < sampleRate; done += blockFrames) {
+      sbuf.clear();
+      processBlock(sbuf, midi);
+      midi.clear();
+      for (int i = 0; i < blockFrames; i++) se += sbuf.getSample(0, i) * sbuf.getSample(0, i);
+    }
+    std::fprintf(stderr, "[sepout] stereo energy %.3f separateParts=%d\n", se, (int)mcu->separateParts);
+    std::exit(0);
+  }
+
+  // GitHub issue #2: does Channel Aftertouch reach the firmware and change the sound? Headless.
+  if (std::getenv("JV880_SELFTEST_AFT")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto run = [&](int ms, double *rms, double *bright) {
+      double e = 0, d = 0; long n = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 1; i < blockFrames; i++) { e += l[i] * l[i]; d += (l[i] - l[i - 1]) * (l[i] - l[i - 1]); n++; }
+      }
+      if (rms) *rms = std::sqrt(e / std::max(1L, n));
+      if (bright) *bright = std::sqrt(d / std::max(1L, n));
+    };
+    run(2500, nullptr, nullptr);
+    int idx = -1;
+    for (int i = 0; i < 195; i++) if (patchInfos[i].present && juce::String(patchInfos[i].name, patchInfos[i].nameLength).trim() == "Analog Pad 2") idx = i;
+    std::fprintf(stderr, "[aft] Analog Pad 2 index %d\n", idx);
+    if (idx >= 0) setCurrentProgram(idx);
+    run(1500, nullptr, nullptr);
+    const Patch *pt = (const Patch *)status.patch;
+    for (int t = 0; t < 4; t++)
+      std::fprintf(stderr, "[aft] tone %d aft dest %02x %02x sens %02x %02x %02x %02x\n", t, pt->tones[t].matrixAftDestAB, pt->tones[t].matrixAftDestCD,
+                   pt->tones[t].matrixAftSensA, pt->tones[t].matrixAftSensB, pt->tones[t].matrixAftSensC, pt->tones[t].matrixAftSensD);
+    for (int mode = 0; mode < 3; mode++) {
+      uint8_t on[3] = {0x90, 60, 100}, off[3] = {0x80, 60, 0};
+      uint8_t at0[2] = {0xD0, 0}, at127[2] = {0xD0, 127};
+      uint8_t pa0[3] = {0xA0, 60, 0}, pa127[3] = {0xA0, 60, 127};
+      mcu->postMidiSC55(on, 3);
+      double r0, b0, r1, b1;
+      run(1200, &r0, &b0);
+      if (mode == 0) mcu->postMidiSC55(at127, 2); else if (mode == 1) mcu->postMidiSC55(pa127, 3);
+      run(800, &r1, &b1);
+      std::fprintf(stderr, "[aft] mode %s: before rms=%.4f bright=%.4f  after rms=%.4f bright=%.4f\n", mode == 0 ? "channel" : mode == 1 ? "poly" : "none", r0, b0, r1, b1);
+      mcu->postMidiSC55(mode == 0 ? at0 : pa0, mode == 0 ? 2 : 3);
+      mcu->postMidiSC55(off, 3);
+      run(3000, nullptr, nullptr);
+    }
+    std::exit(0);
+  }
+
+  // RE of the firmware's Performance Temp RAM: change ONE Part field over SysEx and diff sram.
+  if (std::getenv("JV880_SELFTEST_PERFRE")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames)
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+    };
+    runMs(2500);
+    for (int i = 0; i < kNumPerformanceParts; i++) {
+      performanceParts[i].present = true;
+      performanceParts[i].midiChannel = i + 1;
+      performanceParts[i].number = (uint8_t)i;
+    }
+    setPerformanceModeEnabled(true);
+    runMs(1000);
+    auto snap = [&]() { return std::vector<uint8_t>(mcu->sram, mcu->sram + SRAM_SIZE); };
+    std::vector<bool> noisy(SRAM_SIZE, false);
+    for (int k = 0; k < 6; k++) {
+      auto a = snap();
+      runMs(250);
+      for (size_t i = 0; i < a.size(); i++) if (a[i] != mcu->sram[i]) noisy[i] = true;
+    }
+    {
+      int c = 0; for (bool b : noisy) c += b;
+      std::fprintf(stderr, "[perfre] noisy bytes: %d of %d\n", c, (int)SRAM_SIZE);
+    }
+    auto diffTo = [&](const char *label, const std::vector<uint8_t> &a) {
+      std::fprintf(stderr, "[perfre] %s:", label);
+      int n = 0;
+      for (size_t i = 0; i < a.size(); i++)
+        if (i >= 0x100 && i < 0x4800 && !noisy[i] && a[i] != mcu->sram[i] && n++ < 60) std::fprintf(stderr, " %04zx:%02x>%02x", i, a[i], mcu->sram[i]);
+      std::fprintf(stderr, " (%d diffs)\n", n);
+    };
+    auto nvSnap = [&]() { return std::vector<uint8_t>(mcu->nvram, mcu->nvram + NVRAM_SIZE); };
+    auto nvDiff = [&](const std::vector<uint8_t> &a) {
+      std::fprintf(stderr, "[perfre]    nvram:");
+      int n = 0;
+      for (size_t i = 0; i < a.size(); i++) if (a[i] != mcu->nvram[i] && n++ < 20) std::fprintf(stderr, " %04zx:%02x>%02x", i, a[i], mcu->nvram[i]);
+      std::fprintf(stderr, " (%d)\n", n);
+    };
+    for (int part : {3}) {
+      auto &p = performanceParts[part];
+      struct F { const char *n; int *i; int v; };
+      int lvl = p.level, pan = p.pan, ch = p.midiChannel, ct = p.coarseTune, ft = p.fineTune, num = p.number;
+      (void)lvl; (void)pan; (void)ch; (void)ct; (void)ft; (void)num;
+      auto test = [&](const char *name, auto setter) {
+        auto before = snap();
+        auto nvBefore = nvSnap();
+        setter();
+        pushPerformancePartToEngine(part);
+        runMs(300);
+        (void)before; (void)nvBefore;
+        std::fprintf(stderr, "[perfre] %-14s rec:", name);
+        for (int k = -1; k < 21; k++) std::fprintf(stderr, " %02x", mcu->sram[0x2096 + 22 * part + k]);
+        std::fprintf(stderr, "\n");
+      };
+      test("baseline", [&] {});
+      test("level 101->91", [&] { p.level = 91; });
+      test("pan 64->33", [&] { p.pan = 33; });
+      test("channel->12", [&] { p.midiChannel = 12; });
+      test("coarse 64->70", [&] { p.coarseTune = 70; });
+      test("fine 64->80", [&] { p.fineTune = 80; });
+      test("number->50", [&] { p.number = 50; });
+      test("rev off", [&] { p.reverbSwitch = false; });
+      test("cho off", [&] { p.chorusSwitch = false; });
+      test("enabled off", [&] { p.enabled = false; });
+      test("output->1", [&] { p.outputSelect = 1; });
+      test("rxvol off", [&] { p.rxVolume = false; });
+      test("output->2", [&] { p.outputSelect = 2; });
+      test("rxpc off", [&] { p.rxProgramChange = false; });
+      test("rxhold off", [&] { p.rxHold1 = false; });
+      test("all on again", [&] { p.enabled = true; p.reverbSwitch = true; p.chorusSwitch = true; p.rxVolume = true; p.rxProgramChange = true; p.rxHold1 = true; p.outputSelect = 0; });
+    }
+    auto comm = [&](const char *label, auto setter) {
+      setter();
+      applyPerformanceCommon();
+      runMs(300);
+      std::fprintf(stderr, "[perfre] common %-18s 2060:", label);
+      for (int k = 0; k < 0x30; k++) std::fprintf(stderr, " %02x", mcu->sram[0x2060 + k]);
+      std::fprintf(stderr, "\n");
+    };
+    comm("baseline", [&] {});
+    comm("keyMode=1", [&] { performanceCommon.keyMode = 1; });
+    comm("reverbType=1", [&] { performanceCommon.reverbType = 1; });
+    comm("reverbLevel=21", [&] { performanceCommon.reverbLevel = 21; });
+    comm("reverbTime=22", [&] { performanceCommon.reverbTime = 22; });
+    comm("reverbFb=23", [&] { performanceCommon.reverbFeedback = 23; });
+    comm("chorusType=2", [&] { performanceCommon.chorusType = 2; });
+    comm("chorusLevel=24", [&] { performanceCommon.chorusLevel = 24; });
+    comm("chorusDepth=25", [&] { performanceCommon.chorusDepth = 25; });
+    comm("chorusRate=26", [&] { performanceCommon.chorusRate = 26; });
+    comm("chorusFb=27", [&] { performanceCommon.chorusFeedback = 27; });
+    comm("chorusOutput=1", [&] { performanceCommon.chorusOutput = 1; });
+    comm("reserve[0]=5", [&] { performanceCommon.voiceReserve[0] = 5; });
+    comm("reserve[7]=6", [&] { performanceCommon.voiceReserve[7] = 6; });
+    // Now let the firmware load a stored Performance: Bank Select 81 + Program Change (Preset A) then Internal.
+    auto dumpRecs = [&](const char *label) {
+      std::fprintf(stderr, "[perfre] %s name='", label);
+      for (int k = 0; k < 12; k++) std::fprintf(stderr, "%c", mcu->sram[0x206a + k] >= 32 ? mcu->sram[0x206a + k] : '?');
+      std::fprintf(stderr, "' common:");
+      for (int k = 0; k < 0x10; k++) std::fprintf(stderr, " %02x", mcu->sram[0x2076 + k - 0 ]);
+      std::fprintf(stderr, "\n");
+      for (int pI = 0; pI < 8; pI++) {
+        std::fprintf(stderr, "[perfre]    part %d:", pI);
+        for (int k = -1; k < 21; k++) std::fprintf(stderr, " %02x", mcu->sram[0x2096 + 22 * pI + k]);
+        std::fprintf(stderr, "\n");
+      }
+    };
+    for (int ct = 0; ct < 3; ct++) {
+      performanceCommon.keyMode = 0; performanceCommon.reverbType = 0; performanceCommon.chorusType = ct;
+      applyPerformanceCommon(); runMs(300);
+      std::fprintf(stderr, "[perfre] chorusType=%d -> raw byte %02x\n", ct, mcu->sram[0x2076]);
+    }
+    // Round trip: what we wrote must be read back identically.
+    performanceCommon.keyMode = 2; performanceCommon.chorusType = 1; performanceCommon.reverbType = 7;
+    applyPerformanceCommon(); runMs(300); importPerformanceFromFirmware();
+    std::fprintf(stderr, "[perfre] roundtrip common: key=%d chorusType=%d reverbType=%d rl=%d rt=%d rfb=%d cl=%d cd=%d cr=%d cfb=%d cout=%d res0=%d res7=%d\n",
+                 performanceCommon.keyMode, performanceCommon.chorusType, performanceCommon.reverbType, performanceCommon.reverbLevel,
+                 performanceCommon.reverbTime, performanceCommon.reverbFeedback, performanceCommon.chorusLevel, performanceCommon.chorusDepth,
+                 performanceCommon.chorusRate, performanceCommon.chorusFeedback, performanceCommon.chorusOutput,
+                 performanceCommon.voiceReserve[0], performanceCommon.voiceReserve[7]);
+    for (int i = 0; i < kNumPerformanceParts; i++) {
+      auto &p = performanceParts[i];
+      std::fprintf(stderr, "[perfre] part %d: '%s' bank=%d num=%d ch=%d lvl=%d pan=%d coarse=%d fine=%d en=%d rev=%d cho=%d pc=%d vol=%d hold=%d\n", i, p.name,
+                   p.bank, p.number, p.midiChannel, p.level, p.pan, p.coarseTune, p.fineTune, p.enabled, p.reverbSwitch, p.chorusSwitch,
+                   p.rxProgramChange, p.rxVolume, p.rxHold1);
+    }
+    // Panel-style load: Bank Select + Program Change on the control channel (16), then poll.
+    lastPerfSysexMs = 0;
+    for (int bankSel : {81, 80}) for (int prog : {1, 2}) {
+      uint8_t msg[5] = {0xBF, 0, (uint8_t)bankSel, 0xCF, (uint8_t)prog};
+      mcu->postMidiSC55(msg, 3);
+      runMs(100);
+      mcu->postMidiSC55(msg + 3, 2);
+      runMs(600);
+      const bool changed = pollPerformanceFromFirmware();
+      std::fprintf(stderr, "[perfre] panel load bank%d pc%d: poll imported=%d name='%s' p0='%s'(b%d n%d) p1='%s' p7='%s' rev=%d lvl0=%d\n", bankSel, prog, changed,
+                   performanceName, performanceParts[0].name, performanceParts[0].bank, performanceParts[0].number, performanceParts[1].name,
+                   performanceParts[7].name, performanceCommon.reverbType, performanceParts[0].level);
+    }
+    std::exit(0);
+  }
+
   // GitHub issue #2: Performance mode must survive a patch click in Browse (setCurrentProgram()), and a
   // Part must obey Channel Volume (CC7). Headless: prints the mode byte and the audio peaks.
   if (std::getenv("JV880_SELFTEST_PERF3")) {
@@ -1377,7 +1816,7 @@ bool VirtualJVProcessor::retryLoadRoms() {
   if (!attemptLoadRoms())
     return false;
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->romsBecameAvailable();
 
@@ -1388,7 +1827,7 @@ void VirtualJVProcessor::setDisplayMode(DisplayMode mode) {
   displayMode = mode;
   savePersistedDisplayMode(mode);
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->refreshDisplayMode();
 }
@@ -1464,7 +1903,7 @@ void VirtualJVProcessor::setSequencerEnabled(bool enabled) {
   if (enabled)
     loadSequencerState();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->refreshSequencerVisibility();
 }
@@ -1478,7 +1917,7 @@ void VirtualJVProcessor::setSequencerView(seqview::View view) {
   sequencerGridMode = grid;
   savePersistedSequencerView(sequencerGridMode, sequencerRetroMode, gridRowHeight);
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->refreshSequencerVisibility();
 }
@@ -1486,7 +1925,13 @@ void VirtualJVProcessor::setSequencerView(seqview::View view) {
 void VirtualJVProcessor::setPaneHeights(int keyboard, int sequencer) {
   keyboardPaneH = keyboard;
   sequencerPaneH = sequencer;
-  savePersistedPaneHeights(keyboard, sequencer);
+  savePersistedPaneHeights(keyboard, sequencer, keyboardCollapsed, sequencerCollapsed);
+}
+
+void VirtualJVProcessor::setPaneCollapsed(bool keyboard, bool sequencer) {
+  keyboardCollapsed = keyboard;
+  sequencerCollapsed = sequencer;
+  savePersistedPaneHeights(keyboardPaneH, sequencerPaneH, keyboardCollapsed, sequencerCollapsed);
 }
 
 void VirtualJVProcessor::setRetroKeyBindings(const juce::String &encoded) {
@@ -1650,6 +2095,8 @@ VirtualJVProcessor::~VirtualJVProcessor() {
 
   mcuLock.enter();
   delete mcu;
+  delete mcu2;
+  mcu2 = nullptr;
   mcuLock.exit();
 }
 
@@ -1699,6 +2146,9 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
 
   if (!loaded)
     return;
+
+  // Picking a Browse patch replaces status.patch: any Part edit session ends (nothing to restore).
+  editingPerformancePart = -1;
 
   // GitHub issue #2: a click on a patch in Browse used to switch Performance mode off. While it is on, the
   // patch is just stored into Patch Temp (slot 0, which no Performance Part uses): no mode byte rewrite, no
@@ -1788,7 +2238,7 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
   if (keepPerformance && engineReset)
     setPerformanceModeEnabled(true);
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
   {
       auto e = dynamic_cast<VirtualJVEditor*>(editor);
 
@@ -1821,7 +2271,7 @@ void VirtualJVProcessor::revertCurrentPatch() {
 
   mcuLock.exit();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
   {
       if (auto e = dynamic_cast<VirtualJVEditor*>(editor))
         e->updateEditTabs();
@@ -2080,13 +2530,20 @@ constexpr size_t kPerfPartNameBytes = sizeof(VirtualJVProcessor::PerformancePart
 // enabled(1) + expansionI(1)
 constexpr size_t kPerfPartRecordBytes = 4 + kPerfPartNameBytes + 5;
 constexpr size_t kPerfNameBytes = 12; // matches the firmware's own Common name field width
+constexpr size_t kPerfBaseBytes = kPerfNameBytes + VirtualJVProcessor::kNumPerformanceParts * kPerfPartRecordBytes;
+// Optional trailer after the base record: "PEX1" + 19 Common bytes + 8 bytes per Part. Files
+// written before it existed (base size only) still load, with the default Common/extra fields.
+constexpr size_t kPerfCommonBytes = 11 + 8;
+constexpr size_t kPerfPartExtraBytes = 8;
+constexpr size_t kPerfExtrasBytes = 4 + kPerfCommonBytes + VirtualJVProcessor::kNumPerformanceParts * kPerfPartExtraBytes;
 
 // Shared by the "Save As..." bank format and the session-restore file - both serialize the same
 // performance name + 8 PerformanceParts, just under different filenames/directories (see
 // performancesDir() vs performanceSessionFile()).
 void appendPerformanceParts(
     juce::MemoryBlock &block, const char (&name)[13],
-    const VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts]) {
+    const VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts],
+    const VirtualJVProcessor::PerformanceCommon &common) {
   block.append(name, kPerfNameBytes);
 
   for (auto &part : parts) {
@@ -2111,14 +2568,35 @@ void appendPerformanceParts(
     block.append(&en, 1);
     block.append(&part.expansionI, 1);
   }
+
+  block.append("PEX1", 4);
+  const uint8_t commonBytes[kPerfCommonBytes] = {
+      (uint8_t)common.keyMode,        (uint8_t)common.reverbType,     (uint8_t)common.reverbLevel,
+      (uint8_t)common.reverbTime,     (uint8_t)common.reverbFeedback, (uint8_t)common.chorusType,
+      (uint8_t)common.chorusLevel,    (uint8_t)common.chorusDepth,    (uint8_t)common.chorusRate,
+      (uint8_t)common.chorusFeedback, (uint8_t)common.chorusOutput,
+      (uint8_t)common.voiceReserve[0], (uint8_t)common.voiceReserve[1], (uint8_t)common.voiceReserve[2],
+      (uint8_t)common.voiceReserve[3], (uint8_t)common.voiceReserve[4], (uint8_t)common.voiceReserve[5],
+      (uint8_t)common.voiceReserve[6], (uint8_t)common.voiceReserve[7]};
+  block.append(commonBytes, sizeof(commonBytes));
+  for (auto &part : parts) {
+    const uint8_t extra[kPerfPartExtraBytes] = {
+        (uint8_t)part.coarseTune,   (uint8_t)part.fineTune,        (uint8_t)(part.reverbSwitch ? 1 : 0),
+        (uint8_t)(part.chorusSwitch ? 1 : 0), (uint8_t)part.outputSelect,
+        (uint8_t)(part.rxProgramChange ? 1 : 0), (uint8_t)(part.rxVolume ? 1 : 0),
+        (uint8_t)(part.rxHold1 ? 1 : 0)};
+    block.append(extra, sizeof(extra));
+  }
 }
 
 // Returns false (leaving `name`/`parts` untouched) if `size` doesn't match exactly - a file this
 // build didn't write, or written by a since-changed format.
 bool readPerformanceParts(
     const uint8_t *bytes, size_t size, char (&name)[13],
-    VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts]) {
-  if (size != kPerfNameBytes + VirtualJVProcessor::kNumPerformanceParts * kPerfPartRecordBytes)
+    VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts],
+    VirtualJVProcessor::PerformanceCommon &common) {
+  const bool hasExtras = size == kPerfBaseBytes + kPerfExtrasBytes;
+  if (size != kPerfBaseBytes && !hasExtras)
     return false;
 
   memcpy(name, bytes, kPerfNameBytes);
@@ -2151,6 +2629,40 @@ bool readPerformanceParts(
     part.enabled = en != 0;
     part.expansionI = expansionI;
   }
+
+  common = VirtualJVProcessor::PerformanceCommon();
+  for (auto &part : parts) { // defaults for files without the trailer
+    part.coarseTune = 64; part.fineTune = 64; part.reverbSwitch = part.chorusSwitch = true;
+    part.outputSelect = 0; part.rxProgramChange = part.rxVolume = part.rxHold1 = true;
+  }
+  if (hasExtras && memcmp(bytes + offset, "PEX1", 4) == 0) {
+    const uint8_t *c = bytes + offset + 4;
+    common.keyMode = juce::jlimit(0, 2, (int)c[0]);
+    common.reverbType = juce::jlimit(0, 7, (int)c[1]);
+    common.reverbLevel = juce::jlimit(0, 127, (int)c[2]);
+    common.reverbTime = juce::jlimit(0, 127, (int)c[3]);
+    common.reverbFeedback = juce::jlimit(0, 127, (int)c[4]);
+    common.chorusType = juce::jlimit(0, 2, (int)c[5]);
+    common.chorusLevel = juce::jlimit(0, 127, (int)c[6]);
+    common.chorusDepth = juce::jlimit(0, 127, (int)c[7]);
+    common.chorusRate = juce::jlimit(0, 127, (int)c[8]);
+    common.chorusFeedback = juce::jlimit(0, 127, (int)c[9]);
+    common.chorusOutput = juce::jlimit(0, 1, (int)c[10]);
+    for (int i = 0; i < 8; ++i)
+      common.voiceReserve[i] = juce::jlimit(0, 28, (int)c[11 + i]);
+    const uint8_t *e = c + kPerfCommonBytes;
+    for (auto &part : parts) {
+      part.coarseTune = juce::jlimit(16, 112, (int)e[0]);
+      part.fineTune = juce::jlimit(14, 114, (int)e[1]);
+      part.reverbSwitch = e[2] != 0;
+      part.chorusSwitch = e[3] != 0;
+      part.outputSelect = juce::jlimit(0, 2, (int)e[4]);
+      part.rxProgramChange = e[5] != 0;
+      part.rxVolume = e[6] != 0;
+      part.rxHold1 = e[7] != 0;
+      e += kPerfPartExtraBytes;
+    }
+  }
   return true;
 }
 } // namespace
@@ -2178,8 +2690,12 @@ void VirtualJVProcessor::injectCustomPatchIntoInternalMemory(int patchInfoIndex,
     // (measured: Part 8 on Preset B and Part 8 on Internal after copying Preset B's bytes here render the
     // same drums). Part 8 is then pointed at bank 0 / number 0 by the caller.
     memcpy(&mcu->nvram[0x67f0], info.ptr, 0xa7c);
+    if (mcu2 != nullptr)
+      memcpy(&mcu2->nvram[0x67f0], info.ptr, 0xa7c);
   } else {
     memcpy(&mcu->nvram[0x0d70 + internalSlot * 0x16a], info.name, 0x16a);
+    if (mcu2 != nullptr)
+      memcpy(&mcu2->nvram[0x0d70 + internalSlot * 0x16a], info.name, 0x16a);
   }
 
   // Only one waverom_exp can be loaded into this single engine at a time - matches setCurrent
@@ -2190,6 +2706,8 @@ void VirtualJVProcessor::injectCustomPatchIntoInternalMemory(int patchInfoIndex,
   if (info.expansionI != 0xff && info.expansionI < NUM_EXPS
       && expansionsDescr[info.expansionI] != nullptr) {
     memcpy(mcu->pcm.waverom_exp, expansionsDescr[info.expansionI], 0x800000);
+    if (mcu2 != nullptr)
+      memcpy(mcu2->pcm.waverom_exp, expansionsDescr[info.expansionI], 0x800000);
   }
 }
 
@@ -2197,10 +2715,25 @@ void VirtualJVProcessor::injectCustomPatchIntoInternalMemory(int patchInfoIndex,
 // engine over SysEx DT1, address 00 00 10 00 ("Temporary Performance", common). Caller must
 // already hold mcuLock. Effects/voice-reserve fields are left at 0 for now (confirmed by an
 // audio render test, see CLAUDE.md, that an unreserved Part still plays - voice reserve only
-// affects priority under voice contention) - a future UI pass can expose them.
+// affects priority under voice contention); they now come from performanceCommon (Performance tab).
 void VirtualJVProcessor::pushPerformanceCommonToEngine() {
   std::vector<uint8_t> common(31, 0);
   memcpy(common.data(), performanceName, kPerfNameBytes);
+  const auto &pc = performanceCommon;
+  auto put = [&](int index, int value, int hi) { common[(size_t)index] = (uint8_t)juce::jlimit(0, hi, value); };
+  put(12, pc.keyMode, 2);
+  put(13, pc.reverbType, 7);
+  put(14, pc.reverbLevel, 127);
+  put(15, pc.reverbTime, 127);
+  put(16, pc.reverbFeedback, 127);
+  put(17, pc.chorusType, 2);
+  put(18, pc.chorusLevel, 127);
+  put(19, pc.chorusDepth, 127);
+  put(20, pc.chorusRate, 127);
+  put(21, pc.chorusFeedback, 127);
+  put(22, pc.chorusOutput, 1);
+  for (int i = 0; i < 8; ++i)
+    put(23 + i, pc.voiceReserve[i], 28);
   sendSysexBlock(0x10u << 7, common.data(), common.size());
 }
 
@@ -2223,16 +2756,17 @@ void VirtualJVProcessor::pushPerformancePartToEngine(int partIndex) {
   data[24] = patchValue & 0x0F;        // patchnumber LSB nibble
   data[25] = (uint8_t)juce::jlimit(0, 127, part.level); // partlevel
   data[26] = (uint8_t)juce::jlimit(0, 127, part.pan);   // partpan
-  data[27] = 64; // partcoarsetune, centre
-  data[28] = 64; // partfinetune, centre
-  data[29] = 1;  // reverbswitch - onto the Performance's shared reverb bus
-  data[30] = 1;  // chorusswitch - ditto
+  data[27] = (uint8_t)juce::jlimit(16, 112, part.coarseTune); // partcoarsetune
+  data[28] = (uint8_t)juce::jlimit(14, 114, part.fineTune);   // partfinetune
+  data[29] = part.reverbSwitch ? 1 : 0; // reverbswitch - onto the Performance's shared reverb bus
+  data[30] = part.chorusSwitch ? 1 : 0; // chorusswitch - ditto
   // Receive switches: all zero meant the Part ignored Channel Volume (CC7), Hold-1 and Program Change
   // (GitHub issue #2: "Channel Volume CC messages stop working in Performance mode"). On: as on a
   // real JV-880's Performance Part.
-  data[31] = 1;  // receiveprogramchange
-  data[32] = 1;  // receivevolume
-  data[33] = 1;  // receivehold1
+  data[31] = part.rxProgramChange ? 1 : 0; // receiveprogramchange
+  data[32] = part.rxVolume ? 1 : 0;        // receivevolume
+  data[33] = part.rxHold1 ? 1 : 0;         // receivehold1
+  data[34] = (uint8_t)juce::jlimit(0, 2, part.outputSelect); // outputselect
 
   static constexpr uint8_t partOffsets[VirtualJVProcessor::kNumPerformanceParts] = {
       0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
@@ -2312,7 +2846,7 @@ void VirtualJVProcessor::sendPatchToPerformancePart(int patchInfoIndex, int part
 
   savePerformanceSessionState();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
     {
       e->updatePerformanceTab();
@@ -2341,7 +2875,7 @@ void VirtualJVProcessor::clearPerformancePart(int partIndex) {
 
   savePerformanceSessionState();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->updatePerformanceTab();
 }
@@ -2365,6 +2899,24 @@ void VirtualJVProcessor::setPerformancePartParams(int partIndex, int midiChannel
   savePerformanceSessionState();
 }
 
+void VirtualJVProcessor::applyPerformancePart(int partIndex) {
+  if (partIndex < 0 || partIndex >= kNumPerformanceParts)
+    return;
+  mcuLock.enter();
+  if (performanceModeEnabled)
+    pushPerformancePartToEngine(partIndex);
+  mcuLock.exit();
+  savePerformanceSessionState();
+}
+
+void VirtualJVProcessor::applyPerformanceCommon() {
+  mcuLock.enter();
+  if (performanceModeEnabled)
+    pushPerformanceCommonToEngine();
+  mcuLock.exit();
+  savePerformanceSessionState();
+}
+
 void VirtualJVProcessor::setPerformanceName(const juce::String &name) {
   auto padded = name + "            ";
   for (int i = 0; i < 12; i++) {
@@ -2381,9 +2933,146 @@ void VirtualJVProcessor::setPerformanceName(const juce::String &name) {
   savePerformanceSessionState();
 }
 
+void VirtualJVProcessor::dropExtraEngine() {
+  mcuLock.enter();
+  MCU *old = mcu2;
+  mcu2 = nullptr;
+  mcuLock.exit();
+  delete old;
+}
+
+// Builds the second engine from the first one's current NVRAM and expansion ROM, boots it
+// (outside mcuLock: about 2.5 s of emulated time), then swaps it in and sends it the Performance
+// state. Runs on the calling (message) thread, so the UI pauses for the boot.
+void VirtualJVProcessor::rebuildExtraEngine() {
+  if (!loaded || !extraPolyphony || !performanceModeEnabled)
+    return;
+
+  std::vector<uint8_t> nvramCopy(NVRAM_SIZE);
+  mcuLock.enter();
+  memcpy(nvramCopy.data(), mcu->nvram, NVRAM_SIZE);
+  mcuLock.exit();
+
+  auto engine = std::make_unique<MCU>();
+  engine->startSC55(loadedRoms[getRomIndex("jv880_rom1.bin")], loadedRoms[getRomIndex("jv880_rom2.bin")],
+                    loadedRoms[getRomIndex("jv880_waverom1.bin")], loadedRoms[getRomIndex("jv880_waverom2.bin")],
+                    nvramCopy.data());
+  mcuLock.enter();
+  memcpy(engine->pcm.waverom_exp, mcu->pcm.waverom_exp, 0x800000);
+  mcuLock.exit();
+  engine->SC55_Reset();
+
+  constexpr int kBlock = 512, kRate = 44100;
+  std::vector<float> l(kBlock), r(kBlock);
+  for (int done = 0; done < kRate * 5 / 2; done += kBlock)
+    engine->updateSC55WithSampleRate(l.data(), r.data(), kBlock, kRate);
+
+  mcuLock.enter();
+  MCU *old = mcu2;
+  mcu2 = engine.release();
+  // Same sequence as setPerformanceModeEnabled(true); the duplicate for `mcu` is harmless.
+  const uint8_t modeByte = 0;
+  sendSysexBlock(0, &modeByte, 1);
+  pushPerformanceCommonToEngine();
+  for (int i = 0; i < kNumPerformanceParts; ++i)
+    pushPerformancePartToEngine(i);
+  mcuLock.exit();
+  delete old;
+}
+
+void VirtualJVProcessor::setOutputMode(int mode) {
+  outputMode = mode != 0 ? 1 : 0;
+  savePersistedOutputMode(outputMode);
+}
+
+void VirtualJVProcessor::setMainFullMix(bool enabled) {
+  mainFullMix = enabled;
+  savePersistedMainFullMix(enabled);
+}
+
+juce::String VirtualJVProcessor::getPreferredAudioDeviceType() const { return loadPersistedAudioDeviceType(); }
+
+void VirtualJVProcessor::setPreferredAudioDeviceType(const juce::String &type) {
+  if (type.isNotEmpty() && type != loadPersistedAudioDeviceType())
+    savePersistedAudioDeviceType(type);
+}
+
+bool VirtualJVProcessor::getMultiOutBuses() const { return loadPersistedMultiOut(); }
+
+void VirtualJVProcessor::setMultiOutBuses(bool enabled) { savePersistedMultiOut(enabled); }
+
+void VirtualJVProcessor::setExtraPolyphony(bool enabled) {
+  if (enabled == extraPolyphony)
+    return;
+  extraPolyphony = enabled;
+  savePersistedExtraPolyphony(enabled);
+  if (enabled)
+    rebuildExtraEngine();
+  else
+    dropExtraEngine();
+}
+
+bool VirtualJVProcessor::beginEditPerformancePart(int partIndex) {
+  if (!loaded || !performanceModeEnabled || partIndex < 0 || partIndex >= kNumPerformanceParts - 1)
+    return false;
+  auto &part = performanceParts[partIndex];
+  if (!part.present)
+    return false;
+
+  const int slot = partIndex + 1;
+  mcuLock.enter();
+  const uint8_t *src = nullptr;
+  if (part.bank == 2 || part.bank == 3)
+    src = reinterpret_cast<const uint8_t *>(patchInfos[(part.bank - 2) * 64 + part.number].name);
+  else if (part.bank == 0 && part.number < 64)
+    src = &mcu->nvram[0x0d70 + (size_t)part.number * 0x16a];
+  if (src == nullptr) {
+    mcuLock.exit();
+    return false;
+  }
+  uint8_t copy[0x16a];
+  memcpy(copy, src, sizeof(copy));
+  memcpy(&mcu->nvram[0x0d70 + (size_t)slot * 0x16a], copy, sizeof(copy));
+  if (mcu2 != nullptr)
+    memcpy(&mcu2->nvram[0x0d70 + (size_t)slot * 0x16a], copy, sizeof(copy));
+  part.bank = 0;
+  part.number = (uint8_t)slot;
+  pushPerformancePartToEngine(partIndex);
+  mcuLock.exit();
+
+  if (editingPerformancePart < 0)
+    memcpy(editPatchBackup, status.patch, sizeof(editPatchBackup));
+  memcpy(status.patch, copy, sizeof(copy));
+  editingPerformancePart = partIndex;
+  savePerformanceSessionState();
+
+  if (auto *e = dynamic_cast<VirtualJVEditor *>(safeActiveEditor()))
+    e->updateEditTabs();
+  return true;
+}
+
+void VirtualJVProcessor::endEditPerformancePart() {
+  if (editingPerformancePart < 0)
+    return;
+  memcpy(status.patch, editPatchBackup, sizeof(editPatchBackup));
+  editingPerformancePart = -1;
+  if (auto *e = dynamic_cast<VirtualJVEditor *>(safeActiveEditor()))
+    e->updateEditTabs();
+}
+
+void VirtualJVProcessor::postEditSysex(const uint8_t *data, size_t length) {
+  mcuLock.enter();
+  mcu->postMidiSC55(data, (int)length);
+  if (mcu2 != nullptr)
+    mcu2->postMidiSC55(data, (int)length);
+  mcuLock.exit();
+}
+
 void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
   if (!loaded)
     return;
+  if (!enabled)
+    endEditPerformancePart();
 
   mcuLock.enter();
 
@@ -2410,9 +3099,14 @@ void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
 
   mcuLock.exit();
 
+  if (enabled)
+    rebuildExtraEngine(); // no-op unless extra polyphony is on
+  else
+    dropExtraEngine();
+
   savePerformanceSessionState();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->updatePerformanceTab();
 }
@@ -2424,7 +3118,7 @@ juce::File VirtualJVProcessor::performancesDir() {
 
 bool VirtualJVProcessor::savePerformanceAs(const juce::File &file) {
   juce::MemoryBlock block;
-  appendPerformanceParts(block, performanceName, performanceParts);
+  appendPerformanceParts(block, performanceName, performanceParts, performanceCommon);
 
   file.getParentDirectory().createDirectory();
   if (!file.replaceWithData(block.getData(), block.getSize()))
@@ -2446,7 +3140,7 @@ void VirtualJVProcessor::refreshPerformanceBank() {
   files.sort();
 
   for (auto &file : files) {
-    if (file.getSize() != (int64_t)(kPerfNameBytes + kNumPerformanceParts * kPerfPartRecordBytes))
+    if (file.getSize() != (int64_t)kPerfBaseBytes && file.getSize() != (int64_t)(kPerfBaseBytes + kPerfExtrasBytes))
       continue; // not a file this build wrote (wrong size) - skip rather than risk misreading it
 
     performanceBank.push_back({file.getFileNameWithoutExtension(), file});
@@ -2462,7 +3156,7 @@ void VirtualJVProcessor::loadPerformance(int bankIndex) {
     return;
 
   if (!readPerformanceParts(static_cast<const uint8_t *>(block.getData()), block.getSize(),
-                             performanceName, performanceParts))
+                             performanceName, performanceParts, performanceCommon))
     return;
 
   mcuLock.enter();
@@ -2475,7 +3169,7 @@ void VirtualJVProcessor::loadPerformance(int bankIndex) {
 
   savePerformanceSessionState();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
       e->updatePerformanceTab();
 }
@@ -2489,7 +3183,7 @@ void VirtualJVProcessor::savePerformanceSessionState() {
   juce::MemoryBlock block;
   uint8_t modeByte = performanceModeEnabled ? 1 : 0;
   block.append(&modeByte, 1);
-  appendPerformanceParts(block, performanceName, performanceParts);
+  appendPerformanceParts(block, performanceName, performanceParts, performanceCommon);
 
   auto file = performanceSessionFile();
   file.getParentDirectory().createDirectory();
@@ -2512,7 +3206,7 @@ void VirtualJVProcessor::loadPerformanceSessionState() {
   const auto *bytes = static_cast<const uint8_t *>(block.getData());
   const bool wantEnabled = bytes[0] != 0;
 
-  if (!readPerformanceParts(bytes + 1, block.getSize() - 1, performanceName, performanceParts))
+  if (!readPerformanceParts(bytes + 1, block.getSize() - 1, performanceName, performanceParts, performanceCommon))
     return;
 
   if (wantEnabled)
@@ -2536,6 +3230,12 @@ void VirtualJVProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
   keyboardCollector.reset(sampleRate);
   midiRemapScratch.ensureSize(4096);
+  extraScratchL.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
+  extraScratchR.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
+  for (auto &engine : partScratch)
+    for (auto &part : engine)
+      for (auto &ch : part)
+        ch.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
 
   dspLoadMeasurer.reset(sampleRate, samplesPerBlock);
 }
@@ -2547,8 +3247,22 @@ void VirtualJVProcessor::releaseResources() {
 
 bool VirtualJVProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
-  if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+  // Main bus: stereo, or - for a Standalone audio device with many outputs - a discrete layout whose
+  // channels 0-1 are the main mix and channels 2+2k, 3+2k are Part k+1 (processBlock()).
+  const auto main = layouts.getMainOutputChannelSet();
+  // Only the Standalone accepts it (any audio device with more than two outputs): in a DAW the Parts come
+  // through the "Part n" buses instead, and a host must never pick a surround layout for this synth.
+  const bool multiChannelMain = wrapperType == juce::AudioProcessor::wrapperType_Standalone && main.size() >= 4;
+  if (main != juce::AudioChannelSet::stereo() && !multiChannelMain)
     return false;
+
+  for (int i = 1; i < layouts.outputBuses.size(); i++) {
+    const auto &aux = layouts.outputBuses.getReference(i);
+    if (!aux.isDisabled() && aux != juce::AudioChannelSet::stereo())
+      return false;
+    if (multiChannelMain && !aux.isDisabled())
+      return false;
+  }
 
   return true;
 }
@@ -2693,15 +3407,153 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
     if (!performanceModeEnabled)
       message.setChannel(status.isDrums ? 10 : 1);
 
+    // The JV-880 only receives CHANNEL aftertouch (its MIDI implementation chart lists polyphonic key
+    // pressure as not received), but many hosts and controllers - FL Studio's aftertouch automation, for
+    // one (GitHub issue #2) - send the polyphonic form. Forward it as channel pressure so it is not lost.
+    if (message.isAftertouch())
+      message = juce::MidiMessage::channelPressureChange(message.getChannel(), message.getAfterTouchValue());
+
     int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
 
-    mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+    // Extra polyphony: Note Ons alternate between the two engines, everything else (Note Off,
+    // CC, Program Change, bend, aftertouch, SysEx) goes to both - a Note Off for a note the other
+    // engine never played is harmless.
+    if (mcu2 != nullptr && performanceModeEnabled) {
+      if (message.isNoteOn()) {
+        MCU *target = (extraNoteToggle++ & 1u) ? mcu2 : mcu;
+        target->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+      } else {
+        mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+        mcu2->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+      }
+    } else {
+      mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+    }
   }
 
   float *channelDataL = buffer.getWritePointer(0);
   float *channelDataR = buffer.getWritePointer(1);
 
-  mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate());
+  // Separate outputs (GitHub issue #3). Only Performance mode has Parts to separate, and only when the host
+  // enabled at least one "Part n" bus or the Standalone device offers more than two outputs; otherwise the
+  // engine renders the plain stereo mix exactly as before.
+  const int mainChannels = getChannelCountOfBus(false, 0);
+  bool partBusOn[8] = {false};
+  bool anyPartBus = false;
+  for (int p = 0; p < 8; p++) {
+    if (mainChannels == 2 && getBusCount(false) > 1 + p) {
+      if (auto *bus = getBus(false, 1 + p))
+        partBusOn[p] = bus->isEnabled();
+    } else if (mainChannels > 2) {
+      partBusOn[p] = 3 + 2 * p < mainChannels;
+    }
+    anyPartBus = anyPartBus || partBusOn[p];
+  }
+  const bool splitParts = performanceModeEnabled && anyPartBus;
+  if (std::getenv("JV880_DEBUG_BUSES")) {
+    static int blocks = 0;
+    if (++blocks % 400 == 1)
+      std::fprintf(stderr, "[buses] mainChannels=%d bufferChannels=%d buses(out)=%d perfMode=%d anyPartBus=%d split=%d fullMix=%d wrapper=%d\n", mainChannels,
+                   buffer.getNumChannels(), getBusCount(false), (int)performanceModeEnabled, (int)anyPartBus, (int)splitParts, (int)mainFullMix.load(),
+                   (int)wrapperType);
+  }
+  mcu->setSeparateParts(splitParts);
+  if (mcu2 != nullptr)
+    mcu2->setSeparateParts(splitParts);
+  for (int c = 2; c < buffer.getNumChannels(); c++)
+    buffer.clear(c, 0, numSamples);
+
+  float *partPtrL[2][8], *partPtrR[2][8];
+  if (splitParts)
+    for (int e = 0; e < 2; e++)
+      for (int p = 0; p < 8; p++) {
+        auto &l = partScratch[e][p][0];
+        auto &r = partScratch[e][p][1];
+        if ((int)l.size() < numSamples) { // beyond prepareToPlay's size: rare, allocates once
+          l.resize((size_t)numSamples);
+          r.resize((size_t)numSamples);
+        }
+        partPtrL[e][p] = l.data();
+        partPtrR[e][p] = r.data();
+      }
+
+  mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate(),
+                                splitParts ? partPtrL[0] : nullptr, splitParts ? partPtrR[0] : nullptr);
+
+  if (mcu2 != nullptr && performanceModeEnabled) {
+    if ((int)extraScratchL.size() < numSamples) { // beyond prepareToPlay's size: rare, allocates once
+      extraScratchL.resize((size_t)numSamples);
+      extraScratchR.resize((size_t)numSamples);
+    }
+    mcu2->updateSC55WithSampleRate(extraScratchL.data(), extraScratchR.data(), numSamples, (int)getSampleRate(),
+                                   splitParts ? partPtrL[1] : nullptr, splitParts ? partPtrR[1] : nullptr);
+    for (int i = 0; i < numSamples; ++i) {
+      channelDataL[i] += extraScratchL[(size_t)i];
+      channelDataR[i] += extraScratchR[(size_t)i];
+    }
+    if (splitParts)
+      for (int p = 0; p < 8; p++)
+        for (int i = 0; i < numSamples; ++i) {
+          partPtrL[0][p][i] += partPtrL[1][p][i];
+          partPtrR[0][p][i] += partPtrR[1][p][i];
+        }
+  }
+
+  if (splitParts && outputMode == 1) {
+    // Main + Sub: the Sub pair carries the dry sum of the Parts set to Sub (no effects, like the hardware's SUB
+    // jack); the main keeps everything else, effects return included. Needs the first extra pair.
+    float *subL = nullptr, *subR = nullptr;
+    if (partBusOn[0]) {
+      if (mainChannels > 2) {
+        subL = buffer.getWritePointer(2);
+        subR = buffer.getWritePointer(3);
+      } else {
+        auto bus = getBusBuffer(buffer, false, 1);
+        subL = bus.getWritePointer(0);
+        subR = bus.getWritePointer(1);
+      }
+    }
+    if (subL != nullptr) {
+      for (int i = 0; i < numSamples; ++i)
+        subL[i] = subR[i] = 0.0f;
+      for (int p = 0; p < 8; p++) {
+        if (performanceParts[p].outputSelect != 1)
+          continue;
+        for (int i = 0; i < numSamples; ++i) {
+          subL[i] += partPtrL[0][p][i];
+          subR[i] += partPtrR[0][p][i];
+          if (!mainFullMix) {
+            channelDataL[i] -= partPtrL[0][p][i];
+            channelDataR[i] -= partPtrR[0][p][i];
+          }
+        }
+      }
+    }
+  } else if (splitParts) {
+    // Each routed Part leaves the main mix and goes to its own bus; the main output keeps the effects return,
+    // unrouted Parts and anything the firmware did not attribute to a Part.
+    for (int p = 0; p < 8; p++) {
+      if (!partBusOn[p])
+        continue;
+      float *outL, *outR;
+      if (mainChannels > 2) {
+        outL = buffer.getWritePointer(2 + 2 * p);
+        outR = buffer.getWritePointer(3 + 2 * p);
+      } else {
+        auto bus = getBusBuffer(buffer, false, 1 + p);
+        outL = bus.getWritePointer(0);
+        outR = bus.getWritePointer(1);
+      }
+      for (int i = 0; i < numSamples; ++i) {
+        outL[i] = partPtrL[0][p][i];
+        outR[i] = partPtrR[0][p][i];
+        if (!mainFullMix) {
+          channelDataL[i] -= partPtrL[0][p][i];
+          channelDataR[i] -= partPtrR[0][p][i];
+        }
+      }
+    }
+  }
 
   // Internal metronome click synthesis (ported from the D-110 project's own processBlock(),
   // see this file's own MetronomeClick member comments) - the alternative to real notes on the
@@ -2809,7 +3661,7 @@ void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
   mcu->SC55_Reset();
   mcuLock.exit();
 
-  if (auto editor = getActiveEditor())
+  if (auto editor = safeActiveEditor())
   {
       auto e = dynamic_cast<VirtualJVEditor*>(editor);
 
@@ -2875,6 +3727,117 @@ void VirtualJVProcessor::sendSysexBlock(uint32_t address, const uint8_t *data, s
   buf.push_back(0xf7);
 
   mcu->postMidiSC55(buf.data(), (int)buf.size());
+  if (mcu2 != nullptr)
+    mcu2->postMidiSC55(buf.data(), (int)buf.size());
+  lastPerfSysexMs = juce::Time::getMillisecondCounterHiRes();
+  lastFirmwarePerfSnapshot.clear(); // our own write: re-baseline instead of importing it back
+}
+
+namespace {
+constexpr size_t kFwPerfName = 0x206a, kFwPerfCommon = 0x2076, kFwPerfPart0 = 0x2096;
+constexpr size_t kFwPerfPartStride = 22;
+
+std::vector<uint8_t> firmwarePerfSnapshot(const uint8_t *sram) {
+  std::vector<uint8_t> v(sram + kFwPerfName, sram + kFwPerfName + 12);
+  v.insert(v.end(), sram + kFwPerfCommon, sram + kFwPerfCommon + 16);
+  for (int i = 0; i < 8; i++)
+    v.insert(v.end(), sram + kFwPerfPart0 + kFwPerfPartStride * i - 1, sram + kFwPerfPart0 + kFwPerfPartStride * i + 6);
+  return v;
+}
+} // namespace
+
+bool VirtualJVProcessor::importPerformanceFromFirmware() {
+  if (!loaded)
+    return false;
+  mcuLock.enter();
+  const uint8_t *sram = mcu->sram;
+
+  memcpy(performanceName, sram + kFwPerfName, 12);
+  performanceName[12] = '\0';
+  for (int i = 0; i < 12; i++)
+    if (performanceName[i] < 32 || performanceName[i] > 126) performanceName[i] = ' ';
+
+  const uint8_t *c = sram + kFwPerfCommon;
+  performanceCommon.keyMode = (c[0] >> 6) & 3;
+  performanceCommon.chorusType = (c[0] >> 3) & 3;
+  performanceCommon.reverbType = c[0] & 7;
+  performanceCommon.reverbLevel = c[1];
+  performanceCommon.reverbTime = c[2];
+  performanceCommon.reverbFeedback = c[3];
+  performanceCommon.chorusLevel = c[4] & 0x7f;
+  performanceCommon.chorusOutput = (c[4] >> 7) & 1;
+  performanceCommon.chorusDepth = c[5];
+  performanceCommon.chorusRate = c[6];
+  performanceCommon.chorusFeedback = c[7];
+  for (int i = 0; i < 8; i++)
+    performanceCommon.voiceReserve[i] = c[8 + i];
+
+  for (int i = 0; i < kNumPerformanceParts; i++) {
+    const uint8_t *r = sram + kFwPerfPart0 + kFwPerfPartStride * (size_t)i - 1;
+    auto &part = performanceParts[i];
+    part.rxProgramChange = (r[0] & 0x80) != 0;
+    part.rxVolume = (r[0] & 0x40) != 0;
+    part.rxHold1 = (r[0] & 0x20) != 0;
+    const int value = r[1];
+    part.bank = (uint8_t)((value >> 6) & 3);
+    part.number = (uint8_t)(value & 63);
+    part.level = r[2];
+    part.pan = r[3];
+    part.coarseTune = juce::jlimit(16, 112, (int)(int8_t)r[4] + 64);
+    part.fineTune = juce::jlimit(14, 114, (int)(int8_t)r[5] + 64);
+    part.enabled = (r[6] & 0x80) != 0;
+    part.reverbSwitch = (r[6] & 0x40) != 0;
+    part.chorusSwitch = (r[6] & 0x20) != 0;
+    part.midiChannel = (r[6] & 0x0f) + 1;
+    part.present = true;
+    part.isRhythm = (i == kNumPerformanceParts - 1);
+    part.expansionI = 0xff;
+
+    juce::String nm;
+    if (part.isRhythm) {
+      const int idx = part.bank == 2 ? 192 : part.bank == 3 ? 193 : 194;
+      nm = juce::String(patchInfos[idx].name, patchInfos[idx].nameLength);
+    } else if (part.bank == 2 || part.bank == 3) {
+      const auto &info = patchInfos[(part.bank - 2) * 64 + part.number];
+      nm = juce::String(info.name, info.nameLength);
+    } else if (part.bank == 0) {
+      nm = juce::String(reinterpret_cast<const char *>(&mcu->nvram[0x0d70 + (size_t)part.number * 0x16a]), 12);
+    } else {
+      nm = "Card " + juce::String(part.number + 1);
+    }
+    nm = nm.trim();
+    memset(part.name, 0, sizeof(part.name));
+    memcpy(part.name, nm.toRawUTF8(), std::min((size_t)nm.getNumBytesAsUTF8(), sizeof(part.name) - 1));
+  }
+  lastFirmwarePerfSnapshot = firmwarePerfSnapshot(sram);
+  mcuLock.exit();
+  savePerformanceSessionState();
+  return true;
+}
+
+bool VirtualJVProcessor::pollPerformanceFromFirmware() {
+  if (!loaded || !performanceModeEnabled || mcu->nvram[0x11] != 0)
+    return false;
+  // Recent writes of our own are still on their way into the firmware: never read those back.
+  if (juce::Time::getMillisecondCounterHiRes() - lastPerfSysexMs < 1500.0)
+    return false;
+  mcuLock.enter();
+  const auto snap = firmwarePerfSnapshot(mcu->sram);
+  mcuLock.exit();
+  if (lastFirmwarePerfSnapshot.empty()) {
+    lastFirmwarePerfSnapshot = snap;
+    return false;
+  }
+  if (snap == lastFirmwarePerfSnapshot)
+    return false;
+  const bool ok = importPerformanceFromFirmware();
+  if (ok && mcu2 != nullptr) {
+    // The second engine did not see the Panel's load: mirror the imported state into it.
+    pushPerformanceCommonToEngine();
+    for (int i = 0; i < kNumPerformanceParts; i++)
+      pushPerformancePartToEngine(i);
+  }
+  return ok;
 }
 
 void VirtualJVProcessor::sendSysexParamChange(uint32_t address, uint8_t value) {
