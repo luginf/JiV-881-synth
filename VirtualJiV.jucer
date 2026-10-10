@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="DSwmeO" name="virtual_jiv881" projectType="audioplug" useAppConfig="0"
-              version="1.4.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
+              version="1.5.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
               pluginManufacturerCode="Lgnf" pluginCode="JI81" cppLanguageStandard="17"
               pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="JiV-881"
               pluginDesc="Virtual JiV-881" companyName="luginf" companyWebsite="https://github.com/luginf/JiV-881-synth"
@@ -128,7 +128,7 @@
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
     <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
   </MODULES>
-  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1" JUCE_VST3_CAN_REPLACE_VST2="0" JUCE_JACK="1"/>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1" JUCE_VST3_CAN_REPLACE_VST2="0"/>
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" bigIcon="DiWlj3" smallIcon="DiWlj3">
       <CONFIGURATIONS>
@@ -174,7 +174,7 @@
         <MODULEPATH id="juce_gui_extra" path="./JUCE/modules"/>
       </MODULEPATHS>
     </XCODE_IPHONE>
-    <LINUX_MAKE targetFolder="Builds/LinuxMakefile" smallIcon="DiWlj3" bigIcon="DiWlj3">
+    <LINUX_MAKE targetFolder="Builds/LinuxMakefile" smallIcon="DiWlj3" bigIcon="DiWlj3" extraDefs="JUCE_JACK=1">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="JiV-881"/>
         <CONFIGURATION isDebug="0" name="Release" targetName="JiV-881" linkTimeOptimisation="1"/>

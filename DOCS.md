@@ -29,12 +29,19 @@ real hardware's ROM does.
   "User" patches, and any loaded SR-JV80 expansion board's patches. Click to load it into the
   currently edited Patch/Rhythm. "Save As..." stores the current Patch into your own User bank
   (`~/.config/JV880/User/*.jvp`). Right-click a patch for "Send to Performance Part N" to assign
-  it directly to a Performance Part without leaving Browse.
+  it directly to a Performance Part without leaving Browse. The search box at the top filters by
+  name across every bank and expansion (results show the bank/expansion).
 - **Performance**: builds and plays a full 8-Part Performance. Per Part: assigned Patch/Rhythm
-  Set, MIDI receive channel, level, pan, on/off. "All On/Off" toggles every Part at once. Runs on
+  Set, MIDI receive channel, level, pan, on/off. "All On/Off" toggles every Part at once. "Part
+  details" exposes the rest of each Part (coarse/fine tune, reverb/chorus switches, output
+  Main/Sub/Patch, Program Change/Volume/Hold-1 reception, voice reserve) and "Performance common"
+  the key mode and the shared reverb/chorus. The **Edit** button of a Part sends its patch to the
+  Common/Tone tabs so you can edit what that Part plays. A Performance loaded on the front panel
+  (Interface/Panel buttons, or Bank Select + Program Change on MIDI channel 16) is mirrored into
+  this tab. Runs on
   the same single emulated engine as Patch mode (no extra CPU cost per Part). Save/load your own
   Performances (`~/.config/JV880/Performances/*.jvpf`), separate from the JV-880's own internal
-  Performance memory (not yet importable here - see CLAUDE.md's "Piste ouverte" if curious).
+  Performance memory.
   Assigning Parts from two different expansion boards works but only the most recently assigned
   one actually sounds right (same limit as the real hardware: one expansion slot).
 - **Common**: Patch-wide settings shared by all 4 Tones - name, effects (reverb/chorus depth,
@@ -46,6 +53,9 @@ real hardware's ROM does.
   (Browse/Use Default/Reload ROMs - can be changed and reloaded without restarting), and the
   on-screen display mode (see below). In Standalone builds only, this is also where you pick your
   audio/MIDI device and buffer size/sample rate (in a plugin, your DAW/host owns that instead).
+  Also here: **Extra polyphony** (a second engine for 56 voices in Performance mode, about 2x the
+  CPU) and the separate-outputs options below. All settings are kept in one `settings.ini` next to
+  the ROMs (`~/.config/JV880/` or `~/.config/JiV881/`).
 - **Panel**: only shown when Display is set to "LCD only" (see below) - a row of clickable
   physical panel buttons plus the DATA dial, for driving the real firmware's own screens directly
   (EDIT/SYSTEM/RHYTHM/UTILITY, cursor, TONE SELECT, etc.), same as pressing them on real hardware.
@@ -120,6 +130,23 @@ drawer handles, and in Settings.
 Not yet done: no app store distribution (releases ship a debug-keystore-signed APK); tested on one
 real phone (see `.claude/dev-notes/android.md` for the D-110 sibling
 project's own catalogue of JUCE/Android gotchas this port leans on).
+
+## Separate outputs (Performance mode)
+
+Each Part can be sent to its own stereo output. The chip's 28 voices are shared, but the firmware
+records which Part owns each voice, so every Part's dry signal is split out; reverb/chorus (one
+effects bus on the JV-880) stay on the main output. Main + Parts adds up to the normal mix.
+
+- **Plugin (VST3/LV2)**: buses "Part 1".."Part 8", off by default. Tick *Part outputs on* in Settings,
+  reload the plugin, then enable them in your host (a few hosts, e.g. Carla, ignore extra buses).
+- **Standalone**: any audio device with more than 2 outputs: channels 1-2 main, then one pair per Part.
+  On Linux the *JACK (JiV-881 Part outputs)* device type offers 18 free named ports (`main_L`,
+  `part1_L`...) that you route yourself; JUCE's plain JACK type is limited to the ports of `system`.
+- **Settings**: *Outputs: Main + Parts / Main + Sub* (Sub = dry sum of the Parts whose Output is Sub,
+  like the hardware's SUB jack; "Patch" counts as Main) and *Main out = full mix* (Parts are copied
+  instead of removed from the main).
+- Only in Performance mode; in Patch mode everything stays on the main. Windows/macOS: same plugin
+  buses and multi-channel Standalone devices; the JACK type is Linux only.
 
 ## Desktop Standalone: names, icon, audio settings
 
