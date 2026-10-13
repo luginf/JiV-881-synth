@@ -83,6 +83,9 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
   searchBox.setTextToShowWhenEmpty("Search presets in all banks and expansions...", juce::Colours::grey);
   searchBox.onTextChange = [this] { updateSearch(); };
   searchBox.onEscapeKey = [this] { searchBox.clear(); updateSearch(); };
+  addAndMakeVisible(favoritesButton);
+  favoritesButton.setTooltip("Show only favorite patches (click the star at the end of a row to add or remove one)");
+  favoritesButton.onClick = [this] { updateSearch(); };
   searchListBox.setRowHeight(rowHeight + 3);
   addChildComponent(searchListBox);
 
@@ -126,7 +129,8 @@ void PatchBrowser::updateSearch()
 {
   searchResults.clear();
   const auto query = searchBox.getText().trim();
-  const bool active = query.isNotEmpty() && processor.loaded;
+  const bool favOnly = favoritesButton.getToggleState();
+  const bool active = (query.isNotEmpty() || favOnly) && processor.loaded;
 
   if (active)
   {
@@ -137,7 +141,8 @@ void PatchBrowser::updateSearch()
       if (g == 1 && !romInfos[g + romCountRequired - 1].loaded)
         continue;
       for (auto *info : processor.patchInfoPerGroup[g])
-        if (info != nullptr && juce::String(info->name, info->nameLength).containsIgnoreCase(query))
+        if (info != nullptr && (query.isEmpty() || juce::String(info->name, info->nameLength).containsIgnoreCase(query))
+            && (!favOnly || processor.isFavorite(info->iInList)))
           searchResults.push_back({ info->iInList, g });
     }
   }
@@ -163,8 +168,19 @@ void PatchBrowser::SearchListModel::paintListBoxItem(int row, juce::Graphics &g,
   g.setColour(selected ? juce::Colours::black : juce::Colours::lightblue);
   g.drawFittedText(r.group <= userGroupIndex ? groupNames[r.group] : "", { width / 2, 0, width / 2 - 5, height - 2 },
                    juce::Justification::left, 1);
+  drawFavoriteStar(g, width, height, browser.processor.isFavorite(r.patchIndex), selected);
   g.setColour(juce::Colours::white.withAlpha(0.4f));
   g.drawRect(0, height - 1, width, 1);
+}
+
+void PatchBrowser::repaintLists()
+{
+  for (int i = 0; i < maxColumnsPool; i++)
+    patchesListBoxes[i]->repaint();
+  if (favoritesButton.getToggleState())
+    updateSearch(); // a removed favorite leaves the list
+  else
+    searchListBox.repaint();
 }
 
 void PatchBrowser::SearchListModel::selectedRowsChanged(int row)
@@ -178,14 +194,23 @@ void PatchBrowser::SearchListModel::selectedRowsChanged(int row)
 
 void PatchBrowser::SearchListModel::listBoxItemClicked(int row, const juce::MouseEvent &e)
 {
-  if (e.mods.isPopupMenu() && row >= 0 && row < (int)browser.searchResults.size())
-    browser.showSendMenuForPatch(browser.searchResults[(size_t)row].patchIndex);
+  if (row < 0 || row >= (int)browser.searchResults.size())
+    return;
+  const int index = browser.searchResults[(size_t)row].patchIndex;
+  if (e.mods.isPopupMenu())
+    browser.showSendMenuForPatch(index);
+  else if (!e.mods.isAnyModifierKeyDown() && e.eventComponent != nullptr && e.x >= e.eventComponent->getWidth() - starZoneW)
+  {
+    browser.processor.toggleFavorite(index);
+    browser.repaintLists();
+  }
 }
 
 void PatchBrowser::showSendMenuForPatch(int index)
 {
-  if (index < 0 || !processor.loaded || !processor.isEligibleForPerformancePart(index))
+  if (index < 0 || !processor.loaded)
     return;
+  const bool eligible = processor.isEligibleForPerformancePart(index);
   const bool isDrums = processor.patchInfos[index].drums;
 
   // Deferred to the next message-loop turn (confirmed necessary while testing this
@@ -196,14 +221,15 @@ void PatchBrowser::showSendMenuForPatch(int index)
   // Showing the popup inline, mid-rebuild, made it silently fail to appear. Letting that
   // settle first sidesteps relying on JUCE's reparenting-during-event-dispatch behaviour.
   juce::Component::SafePointer<PatchBrowser> safeParent(this);
-  juce::MessageManager::callAsync([safeParent, index, isDrums] {
+  juce::MessageManager::callAsync([safeParent, index, isDrums, eligible] {
     if (safeParent == nullptr) {
       return;
     }
 
     constexpr int numParts = VirtualJVProcessor::kNumPerformanceParts;
     auto menu = juce::PopupMenu();
-    for (int s = 0; s < numParts; s++) {
+    menu.addItem(100, safeParent->processor.isFavorite(index) ? "Remove from favorites" : "Add to favorites");
+    for (int s = 0; eligible && s < numParts; s++) {
       const bool partIsRhythm = (s == numParts - 1);
       if (partIsRhythm != isDrums)
         continue; // rhythm sets only go to the fixed Rhythm Part, tones only to the other 7
@@ -222,7 +248,7 @@ void PatchBrowser::showSendMenuForPatch(int index)
     // changes what's currently sounding in Performance mode nor what's stored under "Send
     // to Performance Part N" above. Item ids offset by numParts so a single popup result
     // can tell the two submenus apart.
-    if (safeParent->processor.getSequencerEnabled()) {
+    if (eligible && safeParent->processor.getSequencerEnabled()) {
       juce::PopupMenu seqMenu;
       for (int s = 0; s < numParts; s++) {
         const bool partIsRhythm = (s == numParts - 1);
@@ -242,7 +268,12 @@ void PatchBrowser::showSendMenuForPatch(int index)
       if (safeParent == nullptr) {
         return;
       }
-      if (result >= 1 && result <= VirtualJVProcessor::kNumPerformanceParts)
+      if (result == 100)
+      {
+        safeParent->processor.toggleFavorite(index);
+        safeParent->repaintLists();
+      }
+      else if (result >= 1 && result <= VirtualJVProcessor::kNumPerformanceParts)
         safeParent->processor.sendPatchToPerformancePart(index, result - 1);
       else if (result > VirtualJVProcessor::kNumPerformanceParts
                && result <= 2 * VirtualJVProcessor::kNumPerformanceParts)
@@ -417,7 +448,8 @@ void PatchBrowser::resized()
   importButton.setBounds(getWidth() - 430, 2, 156, topBarH - 4);
 
   const int listsH = getHeight() - topBarH;
-  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 12), topBarH - 4);
+  favoritesButton.setBounds(getWidth() - 430 - 96, 2, 90, topBarH - 4);
+  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 96 - 12), topBarH - 4);
   searchListBox.setBounds(0, topBarH, getWidth(), listsH);
   categoriesListBox.setBounds(0, topBarH, 180, listsH);
 

@@ -40,9 +40,10 @@ public:
 	// Reference height in pixels for the strip this widget wants at the bottom of the editor.
 	static constexpr float kRefH = 120.0f;
 
-	// Two octaves is the default. Clamped to [1,4].
+	// Two octaves is the default. 1-4 = fixed number of octaves, 0 = resizable: keys keep a constant
+	// width and their number follows the width of the component (GitHub issue #9).
 	void setNumOctaves(int n) {
-		n = juce::jlimit(1, 4, n);
+		n = juce::jlimit(0, 4, n);
 		if (n == numOctaves) return;
 		numOctaves = n;
 		rebuildKeys();
@@ -58,6 +59,7 @@ public:
 private:
 	int numOctaves = 2;
 	static constexpr int kLowestNote = 48; // C3
+	static constexpr float kResizableKeyW = 34.0f; // white key width in resizable mode
 
 	enum class PcLayout { qwerty, azerty };
 

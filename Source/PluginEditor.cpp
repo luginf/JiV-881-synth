@@ -176,7 +176,12 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     // opened taller than the screen, with the corner grip off-screen): start much shorter there. The tabs scroll
     // when they do not fit, and the window can still be enlarged.
     const bool isStandalone = processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone;
-    setSize(820, (isStandalone ? 900 : 640) + keyboardPaneH + kHandleH);
+    // Last size used (GitHub issue #9: "remember plugin scaling"), if any, else the defaults above.
+    if (processor.savedWindowW >= 820 && processor.savedWindowH >= 200)
+        setSize(juce::jmin(processor.savedWindowW, 6000), juce::jmin(processor.savedWindowH, 4000));
+    else
+        setSize(820, (isStandalone ? 900 : 640) + keyboardPaneH + kHandleH);
+    sizeTracking = true;
 
     // ROMs not found (Alan's report, 2026-09-08: this used to be a blocking OS alert dialog and
     // an otherwise-empty window - no visible path forward besides guessing the app-data folder
@@ -369,6 +374,17 @@ void VirtualJVEditor::resetPaneHeights()
 
 void VirtualJVEditor::resized()
 {
+    // Remember the size once the user stops dragging (a write per pixel of drag would hammer settings.ini).
+    if (sizeTracking && getWidth() > 0 && getHeight() > 0)
+    {
+        const int token = ++sizeSaveToken;
+        juce::Component::SafePointer<VirtualJVEditor> safe(this);
+        juce::Timer::callAfterDelay(600, [safe, token] {
+            if (safe != nullptr && token == safe->sizeSaveToken)
+                safe->processor.setWindowSize(safe->getWidth(), safe->getHeight());
+        });
+    }
+
     const int handleH = kHandleH;
     int keyboardH = keyboardCollapsed ? 0 : keyboardPaneH;
     // Second handle+drawer, only when the sequencer is actually turned on (see

@@ -48,6 +48,25 @@ static const char *groupNames[] = {
 // extra width for more, shorter columns). Comfortably more than minColumnWidth would ever allow
 // to actually fit side by side even in a very short window.
 const int maxColumnsPool = 10;
+// Width of the clickable star at the right end of a patch row (favorites, GitHub issue #9).
+const int starZoneW = 20;
+
+inline void drawFavoriteStar(juce::Graphics &g, int rowWidth, int rowHeight, bool favorite, bool selected)
+{
+  juce::Path star;
+  const float cx = (float)rowWidth - starZoneW * 0.5f, cy = rowHeight * 0.5f - 1.0f;
+  star.addStar({cx, cy}, 5, 3.0f, 6.5f);
+  if (favorite)
+  {
+    g.setColour(selected ? juce::Colours::black : juce::Colour(0xffffc83d));
+    g.fillPath(star);
+  }
+  else
+  {
+    g.setColour((selected ? juce::Colours::black : juce::Colours::white).withAlpha(0.25f));
+    g.strokePath(star, juce::PathStrokeType(1.0f));
+  }
+}
 const int rowHeight = 17;
 const int minColumnWidth = 90;
 
@@ -190,6 +209,8 @@ public:
       g.drawFittedText(str, {5, 0, width, height - 2},
                        juce::Justification::left, 1);
 
+      drawFavoriteStar(g, width, height, parent->processor.isFavorite(info->iInList), rowIsSelected);
+
       g.setColour(juce::Colours::white.withAlpha(0.4f));
       g.drawRect(0, height - 1, width, 1);
     }
@@ -257,7 +278,19 @@ public:
     // real hardware Parts can't mix the two.
     void listBoxItemClicked(int row, const juce::MouseEvent &e) override {
       if (!e.mods.isPopupMenu())
+      {
+        if (!e.mods.isAnyModifierKeyDown() && e.eventComponent != nullptr
+            && e.x >= e.eventComponent->getWidth() - starZoneW)
+        {
+          const int index = patchIndexForRow(row);
+          if (index >= 0)
+          {
+            parent->processor.toggleFavorite(index);
+            parent->repaintLists();
+          }
+        }
         return;
+      }
       parent->showSendMenuForPatch(patchIndexForRow(row));
     }
 
@@ -289,6 +322,10 @@ public:
   // (PatchesListModel::listBoxItemClicked) and by a long-press on touch screens (mouseDown()
   // below) - same menu either way.
   void showSendMenuForPatch(int index);
+  void repaintLists();
+
+  // Restricts the results list to favorite patches (combined with the search text, if any).
+  juce::ToggleButton favoritesButton { "Favorites" };
 
   // Touch long-press -> the same menu a right-click opens (Alan's request, 2026-09-21: Android
   // has no right mouse button, so "Send to Performance Part N" was unreachable there). Listens

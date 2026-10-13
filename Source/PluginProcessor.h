@@ -14,6 +14,7 @@
 #include <memory>
 #include <vector>
 #include <JuceHeader.h>
+#include <set>
 #include "emulator/mcu.h"
 #include "rom.h"
 #include "sequencer/JivSequencerEngine.h"
@@ -147,7 +148,8 @@ public:
     int getKeyboardPcLayout() const override { return keyboardPcLayout; }
     void setKeyboardPcLayout(int layout) override;
     int getKeyboardNumOctaves() const override { return keyboardNumOctaves; }
-    void setKeyboardNumOctaves(int numOctaves) override { keyboardNumOctaves = juce::jlimit(1, 4, numOctaves); }
+    // 0 = resizable (as many keys as the width allows), 2 or 4 = fixed octaves. Kept in settings.ini.
+    void setKeyboardNumOctaves(int numOctaves) override;
     bool isNoteActive(int note) const override {
         return note >= 0 && note < 128 && noteActiveTable[static_cast<size_t>(note)].load();
     }
@@ -542,6 +544,16 @@ public:
     int keyboardPaneH = kDefaultKeyboardPaneH;
     int sequencerPaneH = kDefaultSequencerPaneH;
     void setPaneHeights(int keyboard, int sequencer);
+    // Last editor window size (settings.ini [layout] window_w/window_h), 0 = never saved. Restored when the
+    // editor opens, so the plugin keeps its scale between sessions and projects (GitHub issue #9).
+    int savedWindowW = 0, savedWindowH = 0;
+    void setWindowSize(int w, int h);
+
+    // Favorite patches (GitHub issue #9), stored in favorites.txt. The key is the patch name plus its
+    // expansion and kind, so it survives a change of ROM set.
+    bool isFavorite(int patchIndex) const;
+    void toggleFavorite(int patchIndex);
+    bool hasFavorites() const { return !favoriteKeys.empty(); }
     // Folded/unfolded state of the keyboard and sequencer drawers, also in settings.ini ([layout]).
     bool keyboardCollapsed = false;
     bool sequencerCollapsed = false;
@@ -604,6 +616,17 @@ private:
     int keyboardPcLayout = 0;
     int keyboardNumOctaves = 2;
     float masterVolume = 1.0f;
+    // After an expansion swap the firmware boots, and a boot-time load of a patch that uses the new board's
+    // waves can end in "Wave number error". So the engine boots on a ROM-native patch, and the real one is
+    // written and selected through a Program Change once the boot has run (servicePendingPatch(), audio thread).
+    std::array<uint8_t, 0x16a> pendingPatch{};
+    int pendingPatchFrames = 0; // frames left before it is applied, 0 = nothing pending
+    void servicePendingPatch(int numFrames); // call with mcuLock held
+public:
+    static constexpr int kBootFrames = 2 * 44100; // generous: boot of the emulated firmware is well under 2 s
+private:
+    std::set<juce::String> favoriteKeys;
+    juce::String favoriteKey(int patchIndex) const;
 
     // revertCurrentPatch()'s own pristine copy - see setCurrentProgram()'s and
     // revertCurrentPatch()'s own comments.

@@ -79,6 +79,8 @@ public:
     void setLCDColor(const LCDisplay::Color color) { lcd.setLCDColor(color); }
 
 private:
+    bool sizeTracking = false; // set once the constructor has chosen the initial size
+    int sizeSaveToken = 0;
     // The Common/Tone/Rhythm/Settings tabs lay themselves out with fixed pixel row positions
     // (see e.g. EditCommonTab::resized()), not proportionally to the space they're given - so
     // rather than teach every one of those layouts to reflow, each is held at this fixed

@@ -179,6 +179,22 @@ void loadPersistedKeyboardSettings(bool &pcInput, int &pcLayout) {
   pcLayout = iniGet(d, "keyboard", "pc_layout", juce::String(pcLayout)).getIntValue();
 }
 
+int loadPersistedKeyboardOctaves() { return iniGet(readIni(), "keyboard", "octaves", "2").getIntValue(); }
+
+void savePersistedKeyboardOctaves(int n) { iniUpdate({{"keyboard", "octaves", juce::String(n)}}); }
+
+void loadPersistedWindowSize(int &w, int &h) {
+  auto d = readIni();
+  w = iniGet(d, "layout", "window_w", "0").getIntValue();
+  h = iniGet(d, "layout", "window_h", "0").getIntValue();
+}
+
+void savePersistedWindowSize(int w, int h) {
+  iniUpdate({{"layout", "window_w", juce::String(w)}, {"layout", "window_h", juce::String(h)}});
+}
+
+juce::File favoritesFile() { return appDataBaseDir().getChildFile("favorites.txt"); }
+
 void savePersistedKeyboardSettings(bool pcInput, int pcLayout) {
   iniUpdate({{"keyboard", "pc_input", pcInput ? "1" : "0"}, {"keyboard", "pc_layout", juce::String(pcLayout)}});
 }
@@ -351,6 +367,15 @@ VirtualJVProcessor::VirtualJVProcessor()
           makeBusesProperties()) {
 
   loadPersistedKeyboardSettings(keyboardPcInput, keyboardPcLayout);
+  keyboardNumOctaves = juce::jlimit(0, 4, loadPersistedKeyboardOctaves());
+  loadPersistedWindowSize(savedWindowW, savedWindowH);
+  {
+    juce::StringArray lines;
+    favoritesFile().readLines(lines);
+    for (auto &l : lines)
+      if (l.isNotEmpty())
+        favoriteKeys.insert(l);
+  }
   displayMode = loadPersistedDisplayMode();
 
   ownedNames.reserve(52);
@@ -1346,6 +1371,46 @@ bool VirtualJVProcessor::attemptLoadRoms() {
 
   // GitHub issue #2: Performance mode must survive a patch click in Browse (setCurrentProgram()), and a
   // Part must obey Channel Volume (CC7). Headless: prints the mode byte and the audio peaks.
+  // Expansion swaps: does the firmware report "Wave number error" on the LCD after changing board?
+  if (std::getenv("JV880_SELFTEST_WAVEERR")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        servicePendingPatch((int)blockFrames);
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+      }
+    };
+    auto lcdText = [&] { return juce::String((const char *)mcu->lcd.LCD_Data, 80); };
+    runMs(3000);
+    std::vector<int> picks;
+    for (int g = 2; g < userGroupIndex; g++)
+      if (romInfos[g + romCountRequired].loaded && !patchInfoPerGroup[g].empty())
+        picks.push_back(g);
+    int bad = 0, total = 0;
+    const int rounds = std::getenv("JV880_SELFTEST_ROUNDS") ? atoi(std::getenv("JV880_SELFTEST_ROUNDS")) : 3;
+    for (int round = 0; round < rounds; round++)
+      for (size_t i = 0; i < picks.size(); i++) {
+        const int g = picks[(i * 7 + round * 3) % picks.size()];
+        const auto &grp = patchInfoPerGroup[g];
+        const int idx = grp[(size_t)((round * 41 + i * 13 + 5) % (int)grp.size())]->iInList;
+        setCurrentProgram(idx);
+        runMs(std::getenv("JV880_SELFTEST_POST_MS") ? atoi(std::getenv("JV880_SELFTEST_POST_MS")) : 3000);
+        const auto t = lcdText();
+        total++;
+        if (t.containsIgnoreCase("wave")) {
+          bad++;
+          setCurrentProgram(idx); // same board already loaded: no swap this time
+          runMs(1500);
+          fprintf(stderr, "[waveerr]   retry without swap: %s\n", lcdText().toRawUTF8());
+        }
+        fprintf(stderr, "[waveerr] patch %d exp %d: %s\n", idx, patchInfos[idx].expansionI, t.toRawUTF8());
+      }
+    fprintf(stderr, "[waveerr] %d / %d swaps ended in an error\n", bad, total);
+    exit(0);
+  }
+
   if (std::getenv("JV880_SELFTEST_PERF3")) {
     const int sampleRate = 44100;
     const unsigned int blockFrames = 512;
@@ -1922,6 +1987,43 @@ void VirtualJVProcessor::setSequencerView(seqview::View view) {
       e->refreshSequencerVisibility();
 }
 
+void VirtualJVProcessor::setKeyboardNumOctaves(int numOctaves) {
+  keyboardNumOctaves = juce::jlimit(0, 4, numOctaves);
+  savePersistedKeyboardOctaves(keyboardNumOctaves);
+}
+
+void VirtualJVProcessor::setWindowSize(int w, int h) {
+  if (w == savedWindowW && h == savedWindowH)
+    return;
+  savedWindowW = w;
+  savedWindowH = h;
+  savePersistedWindowSize(w, h);
+}
+
+juce::String VirtualJVProcessor::favoriteKey(int patchIndex) const {
+  if (patchIndex < 0 || patchIndex >= romPatchCapacity + userPatchCapacity || !patchInfos[patchIndex].present)
+    return {};
+  const auto &p = patchInfos[patchIndex];
+  return juce::String(p.name, p.nameLength) + "|" + juce::String(p.expansionI) + "|" + (p.drums ? "R" : "T");
+}
+
+bool VirtualJVProcessor::isFavorite(int patchIndex) const {
+  const auto k = favoriteKey(patchIndex);
+  return k.isNotEmpty() && favoriteKeys.count(k) > 0;
+}
+
+void VirtualJVProcessor::toggleFavorite(int patchIndex) {
+  const auto k = favoriteKey(patchIndex);
+  if (k.isEmpty())
+    return;
+  if (!favoriteKeys.erase(k))
+    favoriteKeys.insert(k);
+  juce::StringArray lines;
+  for (auto &s : favoriteKeys)
+    lines.add(s);
+  favoritesFile().replaceWithText(lines.joinIntoString("\n") + "\n");
+}
+
 void VirtualJVProcessor::setPaneHeights(int keyboard, int sequencer) {
   keyboardPaneH = keyboard;
   sequencerPaneH = sequencer;
@@ -2134,6 +2236,18 @@ int VirtualJVProcessor::getCurrentProgram() {
   return 0;
 }
 
+void VirtualJVProcessor::servicePendingPatch(int numFrames) {
+  if (pendingPatchFrames <= 0)
+    return;
+  pendingPatchFrames -= numFrames;
+  if (pendingPatchFrames > 0)
+    return;
+  pendingPatchFrames = 0;
+  memcpy(&mcu->nvram[0x0d70], pendingPatch.data(), 0x16a);
+  uint8_t buffer[2] = {0xC0, 0x00};
+  mcu->postMidiSC55(buffer, sizeof(buffer));
+}
+
 void VirtualJVProcessor::setCurrentProgram(int index) {
   // Not getNumPrograms(): that's a rough count of the CONTIGUOUS ROM range starting at 0
   // (195 + totalPatchesExp), but user patches live in patchInfos[]'s separate reserved tail
@@ -2184,9 +2298,13 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
       && status.currentExpansion != expansionI) {
     status.currentExpansion = expansionI;
     memcpy(mcu->pcm.waverom_exp, expansionsDescr[expansionI], 0x800000);
+    // Boot on a ROM-native patch: the real one is applied after the boot (see servicePendingPatch()).
+    if (patchInfos[0].present && !patchInfos[0].drums)
+      memcpy(&mcu->nvram[0x0d70], (const uint8_t *)patchInfos[0].name, 0x16a);
     mcu->SC55_Reset();
     engineReset = true;
   }
+  pendingPatchFrames = 0; // a newer click supersedes any patch still waiting for a boot
 
   if (patchInfos[index].drums) {
     status.isDrums = true;
@@ -2221,10 +2339,16 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
       memcpy(status.patch, &mcu->nvram[0x0d70], 0x16a);
       mcu->SC55_Reset();
     } else {
-      memcpy(&mcu->nvram[0x0d70], source, 0x16a);
-      memcpy(status.patch, &mcu->nvram[0x0d70], 0x16a);
-      uint8_t buffer[2] = {0xC0, 0x00};
-      mcu->postMidiSC55(buffer, sizeof(buffer));
+      memcpy(status.patch, source, 0x16a);
+      if (engineReset) {
+        // The engine is rebooting: apply this patch once the boot is done.
+        memcpy(pendingPatch.data(), source, 0x16a);
+        pendingPatchFrames = kBootFrames;
+      } else {
+        memcpy(&mcu->nvram[0x0d70], source, 0x16a);
+        uint8_t buffer[2] = {0xC0, 0x00};
+        mcu->postMidiSC55(buffer, sizeof(buffer));
+      }
     }
   }
 
@@ -3304,6 +3428,7 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
   }
 
   mcuLock.enter();
+  servicePendingPatch(buffer.getNumSamples());
 
   // Tracked once regardless of Patch/Performance mode - same value either way, so there's no
   // point recomputing it once per active performance slot below.

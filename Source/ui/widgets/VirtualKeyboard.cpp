@@ -59,7 +59,7 @@ VirtualKeyboard::VirtualKeyboard(VirtualKeyboardHost &h) : host(h) {
 	midiRemap = host.getMidiRemap();
 	pcKeyboardEnabled = host.getKeyboardPcInputEnabled();
 	pcLayout = host.getKeyboardPcLayout() == 1 ? PcLayout::azerty : PcLayout::qwerty;
-	numOctaves = juce::jlimit(1, 4, host.getKeyboardNumOctaves());
+	numOctaves = juce::jlimit(0, 4, host.getKeyboardNumOctaves());
 
 	pcKeyDown.assign(trackerKeys().size(), false);
 	setWantsKeyboardFocus(true);
@@ -130,7 +130,13 @@ void VirtualKeyboard::showContextMenu(int noteForHold) {
 	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
 	m.addSeparator();
 #endif
-	m.addItem(6000, "4-octave keyboard (wide)", true, numOctaves == 4);
+	{
+		juce::PopupMenu sizeMenu;
+		sizeMenu.addItem(6002, "2 octaves", true, numOctaves == 2);
+		sizeMenu.addItem(6004, "4 octaves", true, numOctaves == 4);
+		sizeMenu.addItem(6000, "Resizable (more keys when wider)", true, numOctaves == 0);
+		m.addSubMenu("Keyboard size", sizeMenu);
+	}
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 	                 [this, noteForHold](int result) {
@@ -162,8 +168,8 @@ void VirtualKeyboard::showContextMenu(int noteForHold) {
 			host.setKeyboardPcLayout(1);
 			return;
 		}
-		if (result == 6000) {
-			setNumOctaves(numOctaves == 4 ? 2 : 4);
+		if (result == 6000 || result == 6002 || result == 6004) {
+			setNumOctaves(result == 6000 ? 0 : result - 6000);
 			host.setKeyboardNumOctaves(numOctaves);
 			return;
 		}
@@ -255,7 +261,14 @@ void VirtualKeyboard::rebuildKeys() {
 
 	if (keysBounds.getWidth() < 1.0f || keysBounds.getHeight() < 1.0f) return;
 
-	const int kNumWhite = numOctaves * kWhiteKeysPerOctave + 1; // trailing C
+	// Resizable mode: keys keep a fixed width (about what a 2-octave strip gets at the default 820 px
+	// window) and the count follows the width, always starting and ending on a C.
+	int kNumWhite = numOctaves * kWhiteKeysPerOctave + 1; // trailing C
+	if (numOctaves == 0) {
+		const int octaves = juce::jlimit(1, juce::jmax(1, (127 - (kLowestNote + octaveShift * 12)) / 12),
+		                                     (int)(keysBounds.getWidth() / (kResizableKeyW * kWhiteKeysPerOctave)));
+		kNumWhite = octaves * kWhiteKeysPerOctave + 1;
+	}
 	const float whiteW = keysBounds.getWidth() / float(kNumWhite);
 	const float blackW = whiteW * 0.62f;
 	const float blackH = keysBounds.getHeight() * 0.6f;
