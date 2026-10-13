@@ -49,13 +49,13 @@ static const char *groupNames[] = {
 // to actually fit side by side even in a very short window.
 const int maxColumnsPool = 10;
 // Width of the clickable star at the right end of a patch row (favorites, GitHub issue #9).
-const int starZoneW = 20;
+const int starZoneW = 16;
 
 inline void drawFavoriteStar(juce::Graphics &g, int rowWidth, int rowHeight, bool favorite, bool selected)
 {
   juce::Path star;
   const float cx = (float)rowWidth - starZoneW * 0.5f, cy = rowHeight * 0.5f - 1.0f;
-  star.addStar({cx, cy}, 5, 3.0f, 6.5f);
+  star.addStar({cx, cy}, 5, 2.6f, 5.8f);
   if (favorite)
   {
     g.setColour(selected ? juce::Colours::black : juce::Colour(0xffffc83d));
@@ -206,7 +206,7 @@ public:
                                 : juce::Colours::white);
 
       juce::String str = juce::String(info->name, info->nameLength);
-      g.drawFittedText(str, {5, 0, width, height - 2},
+      g.drawFittedText(str, {5, 0, width - 5 - starZoneW, height - 2},
                        juce::Justification::left, 1);
 
       drawFavoriteStar(g, width, height, parent->processor.isFavorite(info->iInList), rowIsSelected);

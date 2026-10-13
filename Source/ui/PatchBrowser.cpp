@@ -166,7 +166,7 @@ void PatchBrowser::SearchListModel::paintListBoxItem(int row, juce::Graphics &g,
   g.setColour(selected ? juce::Colours::black : juce::Colours::white);
   g.drawFittedText(juce::String(info.name, info.nameLength), { 5, 0, width / 2, height - 2 }, juce::Justification::left, 1);
   g.setColour(selected ? juce::Colours::black : juce::Colours::lightblue);
-  g.drawFittedText(r.group <= userGroupIndex ? groupNames[r.group] : "", { width / 2, 0, width / 2 - 5, height - 2 },
+  g.drawFittedText(r.group <= userGroupIndex ? groupNames[r.group] : "", { width / 2, 0, width / 2 - 5 - starZoneW, height - 2 },
                    juce::Justification::left, 1);
   drawFavoriteStar(g, width, height, browser.processor.isFavorite(r.patchIndex), selected);
   g.setColour(juce::Colours::white.withAlpha(0.4f));
@@ -448,8 +448,8 @@ void PatchBrowser::resized()
   importButton.setBounds(getWidth() - 430, 2, 156, topBarH - 4);
 
   const int listsH = getHeight() - topBarH;
-  favoritesButton.setBounds(getWidth() - 430 - 96, 2, 90, topBarH - 4);
-  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 96 - 12), topBarH - 4);
+  favoritesButton.setBounds(getWidth() - 430 - 76, 2, 70, topBarH - 4);
+  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 76 - 12), topBarH - 4);
   searchListBox.setBounds(0, topBarH, getWidth(), listsH);
   categoriesListBox.setBounds(0, topBarH, 180, listsH);
 
