@@ -106,7 +106,7 @@ struct Tone
 struct Patch
 {
   char name[12];
-  uint8_t revChorConfig; // 0-3: rev type | 4-5: chorus type | 6: ? | 7: velocity
+  uint8_t revChorConfig; // 0-2: rev type | 3-4: chorus type (measured, issue #11) | 5-6: ? | 7: velocity
   uint8_t reverbLevel;
   uint8_t reverbTime;
   uint8_t reverbFeedback;

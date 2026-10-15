@@ -354,6 +354,11 @@ public:
     // Performance Bank list. Loaded once at construction, saved after every mutation.
     static juce::File performanceSessionFile();
     void savePerformanceSessionState();
+    // Raw bytes of the Internal Patch Memory slots / Rhythm Temp that the Parts point at (User and expansion
+    // patches, Edit changes): a bank/number alone does not bring them back (GitHub issue #10). Trailer of
+    // the .jvpf and session files, "PCU1".
+    void appendCustomPartData(juce::MemoryBlock &block);
+    void restoreCustomPartData(const uint8_t *bytes, size_t size);
     void loadPerformanceSessionState();
 
     struct DataToSave

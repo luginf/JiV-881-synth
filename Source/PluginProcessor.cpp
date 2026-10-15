@@ -2719,7 +2719,8 @@ bool readPerformanceParts(
     const uint8_t *bytes, size_t size, char (&name)[13],
     VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts],
     VirtualJVProcessor::PerformanceCommon &common) {
-  const bool hasExtras = size == kPerfBaseBytes + kPerfExtrasBytes;
+  // Anything after the PEX1 trailer is the "PCU1" custom-Part data, read by restoreCustomPartData().
+  const bool hasExtras = size >= kPerfBaseBytes + kPerfExtrasBytes;
   if (size != kPerfBaseBytes && !hasExtras)
     return false;
 
@@ -3243,6 +3244,7 @@ juce::File VirtualJVProcessor::performancesDir() {
 bool VirtualJVProcessor::savePerformanceAs(const juce::File &file) {
   juce::MemoryBlock block;
   appendPerformanceParts(block, performanceName, performanceParts, performanceCommon);
+  appendCustomPartData(block);
 
   file.getParentDirectory().createDirectory();
   if (!file.replaceWithData(block.getData(), block.getSize()))
@@ -3264,11 +3266,65 @@ void VirtualJVProcessor::refreshPerformanceBank() {
   files.sort();
 
   for (auto &file : files) {
-    if (file.getSize() != (int64_t)kPerfBaseBytes && file.getSize() != (int64_t)(kPerfBaseBytes + kPerfExtrasBytes))
+    if (file.getSize() != (int64_t)kPerfBaseBytes && file.getSize() < (int64_t)(kPerfBaseBytes + kPerfExtrasBytes))
       continue; // not a file this build wrote (wrong size) - skip rather than risk misreading it
 
     performanceBank.push_back({file.getFileNameWithoutExtension(), file});
   }
+}
+
+// Layout: "PCU1", then per Part: 1 byte (0 = nothing, 1 = bytes follow) and, if 1, the Part's Internal Patch
+// Memory slot (0x16a bytes, Parts 1-7 with bank 0 and number 1..63) or Rhythm Temp (0xa7c bytes, Part 8, bank 0).
+void VirtualJVProcessor::appendCustomPartData(juce::MemoryBlock &block) {
+  block.append("PCU1", 4);
+  mcuLock.enter();
+  for (int i = 0; i < kNumPerformanceParts; ++i) {
+    const auto &part = performanceParts[i];
+    const bool rhythm = i == kNumPerformanceParts - 1;
+    const bool custom = loaded && mcu != nullptr && part.present && part.bank == 0 && (rhythm || (part.number >= 1 && part.number < 64));
+    const uint8_t flag = custom ? 1 : 0;
+    block.append(&flag, 1);
+    if (custom) {
+      if (rhythm)
+        block.append(&mcu->nvram[0x67f0], 0xa7c);
+      else
+        block.append(&mcu->nvram[0x0d70 + part.number * 0x16a], 0x16a);
+    }
+  }
+  mcuLock.exit();
+}
+
+void VirtualJVProcessor::restoreCustomPartData(const uint8_t *bytes, size_t size) {
+  if (!loaded || mcu == nullptr || size < 4 || memcmp(bytes, "PCU1", 4) != 0)
+    return;
+  size_t offset = 4;
+  mcuLock.enter();
+  for (int i = 0; i < kNumPerformanceParts; ++i) {
+    if (offset >= size)
+      break;
+    const bool has = bytes[offset++] != 0;
+    if (!has)
+      continue;
+    const auto &part = performanceParts[i];
+    const bool rhythm = i == kNumPerformanceParts - 1;
+    const size_t len = rhythm ? 0xa7c : 0x16a;
+    if (offset + len > size)
+      break;
+    if (part.bank == 0 && (rhythm || (part.number >= 1 && part.number < 64))) {
+      const size_t dest = rhythm ? 0x67f0 : (size_t)(0x0d70 + part.number * 0x16a);
+      memcpy(&mcu->nvram[dest], bytes + offset, len);
+      if (mcu2 != nullptr)
+        memcpy(&mcu2->nvram[dest], bytes + offset, len);
+      // Same single-expansion rule as injectCustomPatchIntoInternalMemory(): the last board restored wins.
+      if (part.expansionI != 0xff && part.expansionI < NUM_EXPS && expansionsDescr[part.expansionI] != nullptr) {
+        memcpy(mcu->pcm.waverom_exp, expansionsDescr[part.expansionI], 0x800000);
+        if (mcu2 != nullptr)
+          memcpy(mcu2->pcm.waverom_exp, expansionsDescr[part.expansionI], 0x800000);
+      }
+    }
+    offset += len;
+  }
+  mcuLock.exit();
 }
 
 void VirtualJVProcessor::loadPerformance(int bankIndex) {
@@ -3282,6 +3338,8 @@ void VirtualJVProcessor::loadPerformance(int bankIndex) {
   if (!readPerformanceParts(static_cast<const uint8_t *>(block.getData()), block.getSize(),
                              performanceName, performanceParts, performanceCommon))
     return;
+  restoreCustomPartData(static_cast<const uint8_t *>(block.getData()) + kPerfBaseBytes + kPerfExtrasBytes,
+                        block.getSize() > kPerfBaseBytes + kPerfExtrasBytes ? block.getSize() - kPerfBaseBytes - kPerfExtrasBytes : 0);
 
   mcuLock.enter();
   if (performanceModeEnabled) {
@@ -3308,6 +3366,7 @@ void VirtualJVProcessor::savePerformanceSessionState() {
   uint8_t modeByte = performanceModeEnabled ? 1 : 0;
   block.append(&modeByte, 1);
   appendPerformanceParts(block, performanceName, performanceParts, performanceCommon);
+  appendCustomPartData(block);
 
   auto file = performanceSessionFile();
   file.getParentDirectory().createDirectory();
@@ -3332,6 +3391,8 @@ void VirtualJVProcessor::loadPerformanceSessionState() {
 
   if (!readPerformanceParts(bytes + 1, block.getSize() - 1, performanceName, performanceParts, performanceCommon))
     return;
+  restoreCustomPartData(bytes + 1 + kPerfBaseBytes + kPerfExtrasBytes,
+                        block.getSize() > 1 + kPerfBaseBytes + kPerfExtrasBytes ? block.getSize() - 1 - kPerfBaseBytes - kPerfExtrasBytes : 0);
 
   if (wantEnabled)
     setPerformanceModeEnabled(true); // pushes Common + all 8 Parts to the engine from the state just read

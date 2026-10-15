@@ -175,7 +175,7 @@ void EditCommonTab::updateValues()
     reverbLevelSlider       .setValue(patch->reverbLevel, juce::dontSendNotification);
     reverbTimeSlider        .setValue(patch->reverbTime, juce::dontSendNotification);
     delayFeedbackSlider     .setValue(patch->reverbFeedback, juce::dontSendNotification);
-    chorusTypeComboBox      .setSelectedItemIndex((patch->revChorConfig >> 4) & 0x3, juce::dontSendNotification);
+    chorusTypeComboBox      .setSelectedItemIndex((patch->revChorConfig >> 3) & 0x3, juce::dontSendNotification);
     chorusLevelSlider       .setValue(patch->chorusLevel & 0x7f, juce::dontSendNotification);
     chorusDepthSlider       .setValue(patch->chorusDepth, juce::dontSendNotification);
     chorusRateSlider        .setValue(patch->chorusRate, juce::dontSendNotification);
@@ -346,7 +346,7 @@ void EditCommonTab::buttonClicked(juce::Button* button)
     case VelocitySwitch:
         sendSysexPatchCommonParamChange(0x0c, uint8_t(velocitySwitchToggle.getToggleStateValue() == 1));
         patch->revChorConfig = uint8_t(reverbTypeComboBox.getSelectedItemIndex()
-                                       + (chorusTypeComboBox.getSelectedItemIndex() << 4)
+                                       + (chorusTypeComboBox.getSelectedItemIndex() << 3)
                                        + (velocitySwitchToggle.getToggleState() << 7));
         break;
     case SoloLegato:
@@ -386,14 +386,14 @@ void EditCommonTab::comboBoxChanged(juce::ComboBox* comboBox)
     case ReverbType:
         sendSysexPatchCommonParamChange(0x0d, uint8_t(reverbTypeComboBox.getSelectedItemIndex()));
         patch->revChorConfig = uint8_t(reverbTypeComboBox.getSelectedItemIndex()
-                                       + (chorusTypeComboBox.getSelectedItemIndex() << 4)
+                                       + (chorusTypeComboBox.getSelectedItemIndex() << 3)
                                        + (velocitySwitchToggle.getToggleState() << 7));
         delayFeedbackSlider.setEnabled(reverbTypeComboBox.getSelectedItemIndex() >= 6);
         break;
     case ChorusType:
         sendSysexPatchCommonParamChange(0x11, uint8_t(chorusTypeComboBox.getSelectedItemIndex()));
         patch->revChorConfig = uint8_t(reverbTypeComboBox.getSelectedItemIndex()
-                                       + (chorusTypeComboBox.getSelectedItemIndex() << 4)
+                                       + (chorusTypeComboBox.getSelectedItemIndex() << 3)
                                        + (velocitySwitchToggle.getToggleState() << 7));
         break;
     case ChorusOutput:
