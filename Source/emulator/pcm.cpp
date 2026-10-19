@@ -1008,6 +1008,17 @@ void Pcm::PCM_Update(uint64_t cycles)
         pcm.rcsum[0] = 0;
         pcm.rcsum[1] = 0;
 
+        if (mcu->extInL != nullptr)
+        {
+            // External audio (issue #16): into the effect sends and the dry sum, like a voice would.
+            int el, er;
+            mcu->MCU_ExternalInput(el, er);
+            pcm.rcsum[0] = el;
+            pcm.rcsum[1] = er;
+            pcm.ram1[31][1] = el;
+            pcm.ram1[31][3] = er;
+        }
+
         for (int slot = 0; slot < reg_slots; slot++)
         {
             uint32_t *ram1 = pcm.ram1[slot];

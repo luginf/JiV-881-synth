@@ -348,7 +348,10 @@ juce::AudioProcessor::BusesProperties VirtualJVProcessor::makeBusesProperties() 
     return BusesProperties().withInput("Input", stereo, false).withOutput("Output", stereo, true);
 
   const bool partBusesOn = loadPersistedMultiOut();
+  // Optional external audio input (GitHub issue #16), DISABLED by default so a host never shows an "input
+  // muted" notice; the user enables it in the DAW to run audio through the reverb/chorus.
   return BusesProperties()
+      .withInput("Input", stereo, false)
       .withOutput("Output", stereo, true)
       .withOutput("Part 1", stereo, partBusesOn)
       .withOutput("Part 2", stereo, partBusesOn)
@@ -1105,6 +1108,43 @@ bool VirtualJVProcessor::attemptLoadRoms() {
       for (int n = 0; n < 14; n++) midi.addEvent(juce::MidiMessage::noteOff(1, 40 + n * 2), 0);
       runMs(4000);
     }
+    std::exit(0);
+  }
+
+  // GitHub issue #16: external audio input through the effects. A sine on the (enabled) input bus, then silence:
+  // the output must carry it while it plays and a reverb/chorus tail after it stops.
+  if (std::getenv("JV880_SELFTEST_EXTIN")) {
+    const int sampleRate = 44100, blockFrames = 512;
+    BusesLayout lay = getBusesLayout();
+    lay.inputBuses.getReference(0) = juce::AudioChannelSet::stereo();
+    lay.outputBuses.getReference(0) = juce::AudioChannelSet::stereo();
+    const int setOk = (int)setBusesLayout(lay);
+    if (auto *inBus = getBus(true, 0)) inBus->enable(true);
+    std::fprintf(stderr, "[extin] layout set=%d, input buses=%d enabled=%d\n", setOk, getBusCount(true), (int)(getBusCount(true) > 0 && getBus(true, 0)->isEnabled()));
+    setRateAndBufferSizeDetails(sampleRate, blockFrames);
+    prepareToPlay(sampleRate, blockFrames);
+    juce::AudioBuffer<float> buf(2, blockFrames);
+    juce::MidiBuffer midi;
+    double phase = 0;
+    auto run = [&](int ms, bool sine) {
+      double e = 0;
+      long n = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += blockFrames) {
+        for (int i = 0; i < blockFrames; i++) {
+          const float x = sine ? 0.3f * (float)std::sin(phase) : 0.0f;
+          phase += 2.0 * 3.14159265358979 * 440.0 / sampleRate;
+          buf.setSample(0, i, x);
+          buf.setSample(1, i, x);
+        }
+        processBlock(buf, midi);
+        for (int i = 0; i < blockFrames; i++) { e += buf.getSample(0, i) * buf.getSample(0, i); n++; }
+      }
+      return std::sqrt(e / (double)n);
+    };
+    std::fprintf(stderr, "[extin] boot rms=%.5f\n", run(2500, false));
+    std::fprintf(stderr, "[extin] sine rms=%.5f (input rms 0.212)\n", run(1000, true));
+    std::fprintf(stderr, "[extin] tail 0-500ms rms=%.5f\n", run(500, false));
+    std::fprintf(stderr, "[extin] tail 500-1500ms rms=%.5f\n", run(1000, false));
     std::exit(0);
   }
 
@@ -3415,6 +3455,8 @@ void VirtualJVProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
   keyboardCollector.reset(sampleRate);
   midiRemapScratch.ensureSize(4096);
+  extInScratchL.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
+  extInScratchR.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
   extraScratchL.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
   extraScratchR.assign((size_t)juce::jmax(samplesPerBlock, 8192), 0.0f);
   for (auto &engine : partScratch)
@@ -3440,6 +3482,12 @@ bool VirtualJVProcessor::isBusesLayoutSupported(
   const bool multiChannelMain = wrapperType == juce::AudioProcessor::wrapperType_Standalone && main.size() >= 4;
   if (main != juce::AudioChannelSet::stereo() && !multiChannelMain)
     return false;
+
+  if (layouts.inputBuses.size() > 0) {
+    const auto &in = layouts.inputBuses.getReference(0);
+    if (!in.isDisabled() && in != juce::AudioChannelSet::stereo() && in != juce::AudioChannelSet::mono())
+      return false;
+  }
 
   for (int i = 1; i < layouts.outputBuses.size(); i++) {
     const auto &aux = layouts.outputBuses.getReference(i);
@@ -3663,8 +3711,26 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
         partPtrR[e][p] = r.data();
       }
 
+  // External input (issue #16): copy it out first, the host buffer is rendered over in place.
+  bool haveExtIn = false;
+  if (getBusCount(true) > 0 && getBus(true, 0) != nullptr && getBus(true, 0)->isEnabled()) {
+    auto in = getBusBuffer(buffer, true, 0);
+    if (in.getNumChannels() > 0) {
+      if ((int)extInScratchL.size() < numSamples) {
+        extInScratchL.resize((size_t)numSamples);
+        extInScratchR.resize((size_t)numSamples);
+      }
+      std::copy(in.getReadPointer(0), in.getReadPointer(0) + numSamples, extInScratchL.begin());
+      const float *src = in.getReadPointer(in.getNumChannels() > 1 ? 1 : 0);
+      std::copy(src, src + numSamples, extInScratchR.begin());
+      haveExtIn = true;
+    }
+  }
+  mcu->setExternalInput(haveExtIn ? extInScratchL.data() : nullptr, haveExtIn ? extInScratchR.data() : nullptr, numSamples);
+
   mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate(),
                                 splitParts ? partPtrL[0] : nullptr, splitParts ? partPtrR[0] : nullptr);
+  mcu->setExternalInput(nullptr, nullptr, 0);
 
   if (mcu2 != nullptr && performanceModeEnabled) {
     if ((int)extraScratchL.size() < numSamples) { // beyond prepareToPlay's size: rare, allocates once

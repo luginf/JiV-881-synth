@@ -1135,6 +1135,23 @@ void MCU::MCU_PostSample(int *sample)
     sample_write_ptr = (sample_write_ptr + 1) % audio_buffer_size;
 }
 
+void MCU::MCU_ExternalInput(int &l, int &r)
+{
+    l = r = 0;
+    if (extInL == nullptr || extInFrames <= 0)
+        return;
+    const double pos = (double)sample_write_ptr * extInFrames / (double)extInRenderFrames;
+    int i0 = (int)pos;
+    if (i0 >= extInFrames) i0 = extInFrames - 1;
+    const int i1 = i0 + 1 < extInFrames ? i0 + 1 : i0;
+    const float f = (float)(pos - i0);
+    const float xl = extInL[i0] + (extInL[i1] - extInL[i0]) * f;
+    const float xr = extInR[i0] + (extInR[i1] - extInR[i0]) * f;
+    auto conv = [](float x) { return (int)(std::max(-1.0f, std::min(1.0f, x)) * 0x3ffff) & ~3; };
+    l = conv(xl);
+    r = conv(xr);
+}
+
 void MCU::setSeparateParts(bool on)
 {
     if (on == separateParts)
@@ -1371,6 +1388,7 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
     if (savedDestSampleRate != destSampleRate)
         sample_write_ptr = 0;
 
+    extInRenderFrames = renderBufferFrames > 0 ? (int)renderBufferFrames : 1;
     int maxCycles = nFrames * 256;
 
     for (int i = 0; sample_write_ptr < renderBufferFrames; i++) {

@@ -390,6 +390,7 @@ public:
     bool extraPolyphony = false;
     unsigned extraNoteToggle = 0;
     std::vector<float> extraScratchL, extraScratchR;
+    std::vector<float> extInScratchL, extInScratchR; // host input copied before the in-place render (issue #16)
     // Separate outputs (GitHub issue #3): per-Part dry audio of each engine, see MCU::setSeparateParts().
     std::vector<float> partScratch[2][8][2]; // [engine][part][L/R]
     void rebuildExtraEngine();

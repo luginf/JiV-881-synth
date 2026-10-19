@@ -387,6 +387,16 @@ struct MCU {
     std::vector<float> part_buffer[kNumPartStreams][2];
     void* resamplePart[kNumPartStreams][2] = {};
     bool separateParts = false;
+
+    // External audio fed through the effects (GitHub issue #16). Host-rate buffers valid for the current
+    // updateSC55WithSampleRate() call only; nullptr = no input.
+    const float *extInL = nullptr;
+    const float *extInR = nullptr;
+    int extInFrames = 0;
+    int extInRenderFrames = 1;
+    void setExternalInput(const float *l, const float *r, int frames) { extInL = l; extInR = r; extInFrames = frames; }
+    // Current external sample pair at the 64 kHz write position, in the PCM chip's 20-bit domain.
+    void MCU_ExternalInput(int &l, int &r);
     void setSeparateParts(bool on);
     void MCU_PostPartSamples(const int *partL, const int *partR);
     int savedDestSampleRate = 0;
