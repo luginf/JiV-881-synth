@@ -145,6 +145,17 @@ jobs:
       # itself, not just its parent, since Git-Bash's cd above doesn't carry over to this step).
       run: Compress-Archive -Path "./Builds/VisualStudio2022/x64/Release/VST3/JiV-881.vst3" -DestinationPath "./Builds/VisualStudio2022/x64/Release/VST3/JiV-881.vst3.windows.zip"
       shell: pwsh
+    - name: "Build the CLAP (Windows)"
+      # Separate CMake project (clap/), see its header. Not fatal: a CLAP failure must not block the
+      # release of the VST3/Standalone.
+      continue-on-error: true
+      run: |
+           cmake -S clap -B clap-build -A x64
+           cmake --build clap-build --config Release --target JiV881_CLAP
+           mkdir -p clap-dist
+           cp "$(find clap-build -name 'JiV-881.clap' | head -1)" clap-dist/JiV-881.clap
+           powershell -Command "Compress-Archive -Path clap-dist/JiV-881.clap -DestinationPath clap-dist/JiV-881.clap.windows.zip"
+      shell: bash
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
@@ -152,6 +163,7 @@ jobs:
         path: |
               ./Builds/VisualStudio2022/x64/Release/VST3/JiV-881.vst3.windows.zip
               ./Builds/VisualStudio2022/x64/Release/Standalone Plugin/JiV-881.exe
+              ./clap-dist/JiV-881.clap.windows.zip
   build-osx:
     runs-on: macos-15
     steps:
@@ -177,6 +189,16 @@ jobs:
            zip -r JiV-881.app.macOS.zip JiV-881.app
            cd -
       shell: bash
+    - name: "Build the CLAP (macOS)"
+      # Separate CMake project (clap/), see its header. Not fatal, same as on Windows.
+      continue-on-error: true
+      run: |
+           cmake -S clap -B clap-build -DCMAKE_BUILD_TYPE=Release
+           cmake --build clap-build --target JiV881_CLAP -j"$(sysctl -n hw.ncpu)"
+           mkdir -p clap-dist
+           cp -R "$(find clap-build -name 'JiV-881.clap' | head -1)" clap-dist/JiV-881.clap
+           (cd clap-dist && zip -r JiV-881.clap.macOS.zip JiV-881.clap)
+      shell: bash
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
@@ -185,6 +207,7 @@ jobs:
               ./Builds/MacOSX/build/Release/JiV-881.vst3.macOS.zip
               ./Builds/MacOSX/build/Release/JiV-881.component.macOS.zip
               ./Builds/MacOSX/build/Release/JiV-881.app.macOS.zip
+              ./clap-dist/JiV-881.clap.macOS.zip
   release:
     name: "Release"
     needs: [build-linux-release, build-win, build-osx]
