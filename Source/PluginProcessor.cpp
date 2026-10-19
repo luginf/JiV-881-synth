@@ -3847,6 +3847,13 @@ void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
   mcu->SC55_Reset();
   mcuLock.exit();
 
+  // GitHub issue #15: the reset above reboots the firmware in Patch mode (nvram[0x11] forced from
+  // status.isDrums), but performanceModeEnabled / the Parts were restored from the session file at
+  // construction: the app said "Performance" while the engine played the patch, until the user
+  // toggled the mode by hand. Send mode + Common + Parts again (as the expansion-swap path does).
+  if (performanceModeEnabled)
+    setPerformanceModeEnabled(true);
+
   if (auto editor = safeActiveEditor())
   {
       auto e = dynamic_cast<VirtualJVEditor*>(editor);
