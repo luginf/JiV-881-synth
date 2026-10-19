@@ -103,12 +103,27 @@ void VirtualKeyboard::showContextMenu(int noteForHold) {
 	layoutMenu.addItem(2001, "QWERTY", true, pcLayout == PcLayout::qwerty);
 	layoutMenu.addItem(2002, "AZERTY", true, pcLayout == PcLayout::azerty);
 
+	const int velocity = host.getKeyboardVelocity();
+	const bool presetVelocity = velocity == 60 || velocity == 80 || velocity == 100 || velocity == 127;
+	juce::PopupMenu velocityMenu;
+	for (int v : {60, 80, 100, 127})
+		velocityMenu.addItem(7000 + v, juce::String(v), true, velocity == v);
+	velocityMenu.addItem(7000, presetVelocity ? juce::String("Custom...") : "Custom (" + juce::String(velocity) + ")...", true, !presetVelocity);
+
 	juce::PopupMenu m;
 	if (noteForHold >= 0) {
 		m.addItem(5000, "Hold note (" + juce::MidiMessage::getMidiNoteName(noteForHold, true, true, 4) + ")",
 		          true, heldNotes.count(noteForHold) > 0);
-		m.addSeparator();
 	}
+#if JUCE_ANDROID
+	m.addSectionHeader("Velocity");
+	for (int v : {60, 80, 100, 127})
+		m.addItem(7000 + v, "Velocity: " + juce::String(v), true, velocity == v);
+	m.addItem(7000, "Velocity: custom...", true, !presetVelocity);
+#else
+	m.addSubMenu("Velocity", velocityMenu);
+#endif
+	m.addSeparator();
 #if JUCE_ANDROID
 	// Picking an item inside a submenu deletes the submenu window synchronously (PopupMenu's
 	// hide() resets activeSubMenu) while Android's handleMouseUpCallback still has a second
@@ -141,6 +156,21 @@ void VirtualKeyboard::showContextMenu(int noteForHold) {
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 	                 [this, noteForHold](int result) {
 		if (result == 5000) { toggleHoldNote(noteForHold); return; }
+		if (result > 7000 && result <= 7127) { host.setKeyboardVelocity(result - 7000); return; }
+		if (result == 7000) {
+			auto *w = new juce::AlertWindow("Keyboard velocity", "Velocity of the on-screen keyboard notes (1-127):",
+			                                juce::MessageBoxIconType::NoIcon);
+			w->addTextEditor("velocity", juce::String(host.getKeyboardVelocity()));
+			w->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+			w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+			juce::Component::SafePointer<VirtualKeyboard> safe(this);
+			w->enterModalState(true, juce::ModalCallbackFunction::create([safe, w](int r) {
+				if (r == 1 && safe != nullptr)
+					safe->host.setKeyboardVelocity(juce::jlimit(1, 127, w->getTextEditorContents("velocity").getIntValue()));
+				delete w;
+			}), false);
+			return;
+		}
 		if (result >= 1001 && result <= 1016) {
 			midiChannel = result - 1000;
 			host.setKeyboardMidiChannel(midiChannel);
@@ -183,7 +213,7 @@ void VirtualKeyboard::toggleHoldNote(int note) {
 		sendNote(note, 0.0f, false);
 	} else {
 		heldNotes.insert(note);
-		sendNote(note, 0.85f, true);
+		sendNote(note, (host.getKeyboardVelocity() / 127.0f), true);
 	}
 	repaint();
 }
@@ -202,7 +232,7 @@ bool VirtualKeyboard::keyStateChanged(bool /*isKeyDown*/) {
 		const bool down = juce::KeyPress::isKeyCurrentlyDown((int)c);
 		if (down == pcKeyDown[i]) continue;
 		pcKeyDown[i] = down;
-		sendNote(kLowestNote + octaveShift * 12 + keys[i].semitoneFromBase, 0.85f, down);
+		sendNote(kLowestNote + octaveShift * 12 + keys[i].semitoneFromBase, (host.getKeyboardVelocity() / 127.0f), down);
 		used = true;
 	}
 	if (used) repaint(); // a tracker key just lit/unlit - see isPcKeyDownForNote()
@@ -307,7 +337,7 @@ void VirtualKeyboard::setHeldNoteForSource(int sourceIndex, int note) {
 	if (previous >= 0 && heldNotes.count(previous) == 0) sendNote(previous, 0.0f, false);
 	if (note >= 0) heldNoteBySource[sourceIndex] = note;
 	else if (it != heldNoteBySource.end()) heldNoteBySource.erase(it);
-	if (note >= 0) sendNote(note, 0.85f, true);
+	if (note >= 0) sendNote(note, (host.getKeyboardVelocity() / 127.0f), true);
 	repaint();
 }
 

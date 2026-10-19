@@ -29,6 +29,10 @@ public:
 	virtual int getKeyboardNumOctaves() const = 0;
 	virtual void setKeyboardNumOctaves(int numOctaves) = 0;
 
+	// Velocity (1-127) of the notes the on-screen keyboard plays (GitHub issue #13).
+	virtual int getKeyboardVelocity() const = 0;
+	virtual void setKeyboardVelocity(int velocity) = 0;
+
 	// For the on-screen keyboard's own activity LEDs: true if `note` (0-127, any channel) is
 	// currently sounding anywhere in the app, as opposed to what was struck directly on this
 	// keyboard, which it already tracks itself.

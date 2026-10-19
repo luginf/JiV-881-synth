@@ -13,13 +13,24 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "emulator/mcu.h"
 
 #if JUCE_LINUX
 
 namespace jivjack
 {
 inline const char *kTypeName = "JACK (JiV-881 Part outputs)";
-constexpr int kNumChannels = 18;
+constexpr int kNumPartChannels = 18;                                           // main + 8 Parts
+constexpr int kMaxChannels = kNumPartChannels + 2 * MCU::kNumDrumStreams;       // + one pair per drum note
+// "Separate drum outputs" extra feature: set before the device type is created (restart to apply).
+inline bool drumPorts = false;
+// Two input ports (input_L/R) for the "Audio input through effects" extra feature (restart to apply).
+inline bool inputPorts = false;
+// Output ports that currently have a connection (bit i = output channel i), refreshed every JACK cycle, so the
+// engine only separates what is actually plugged. Valid only while the JACK device is running.
+inline std::atomic<uint64_t> connectedMask{0};
+inline std::atomic<bool> connectedMaskValid{false};
+inline int numChannels() { return drumPorts ? kMaxChannels : kNumPartChannels; }
 
 // The few libjack entry points we need, resolved with dlopen.
 struct Api
@@ -34,6 +45,7 @@ struct Api
     Port *(*port_register)(Client *, const char *, const char *, unsigned long, unsigned long) = nullptr;
     void *(*port_get_buffer)(Port *, unsigned int) = nullptr;
     int (*set_process_callback)(Client *, ProcessCb, void *) = nullptr;
+    int (*port_connected)(const Port *) = nullptr;
     int (*activate)(Client *) = nullptr;
     int (*deactivate)(Client *) = nullptr;
     unsigned int (*get_sample_rate)(Client *) = nullptr;
@@ -59,6 +71,7 @@ struct Api
         deactivate = (decltype(deactivate))lib.getFunction("jack_deactivate");
         get_sample_rate = (decltype(get_sample_rate))lib.getFunction("jack_get_sample_rate");
         get_buffer_size = (decltype(get_buffer_size))lib.getFunction("jack_get_buffer_size");
+        port_connected = (decltype(port_connected))lib.getFunction("jack_port_connected");
         loaded = client_open && client_close && port_register && port_get_buffer && set_process_callback && activate
                  && deactivate && get_sample_rate && get_buffer_size;
     }
@@ -82,14 +95,25 @@ public:
             lastError = "No JACK server running";
             return;
         }
-        static const char *names[kNumChannels] = {"main_L",   "main_R",   "part1_L", "part1_R", "part2_L", "part2_R",
-                                                  "part3_L",  "part3_R",  "part4_L", "part4_R", "part5_L", "part5_R",
-                                                  "part6_L",  "part6_R",  "part7_L", "part7_R", "part8_L", "part8_R"};
-        for (int i = 0; i < kNumChannels; i++)
+        numCh = numChannels();
+        static const char *names[kNumPartChannels] = {"main_L",   "main_R",   "part1_L", "part1_R", "part2_L", "part2_R",
+                                                      "part3_L",  "part3_R",  "part4_L", "part4_R", "part5_L", "part5_R",
+                                                      "part6_L",  "part6_R",  "part7_L", "part7_R", "part8_L", "part8_R"};
+        for (int i = 0; i < numCh; i++)
         {
-            ports[i] = api.port_register(client, names[i], "32 bit float mono audio", 0x2 /* JackPortIsOutput */, 0);
-            channelNames.add(names[i]);
+            juce::String name = i < kNumPartChannels
+                                    ? juce::String(names[i])
+                                    : "drum" + juce::String((i - kNumPartChannels) / 2 + 1).paddedLeft('0', 2) + "_"
+                                          + MCU::kDrumNoteNames[(i - kNumPartChannels) / 2] + ((i & 1) ? "_R" : "_L");
+            ports[i] = api.port_register(client, name.toRawUTF8(), "32 bit float mono audio", 0x2 /* JackPortIsOutput */, 0);
+            channelNames.add(name);
         }
+        if (inputPorts)
+            for (const char *n : {"input_L", "input_R"})
+            {
+                inPorts[numIn++] = api.port_register(client, n, "32 bit float mono audio", 0x1 /* JackPortIsInput */, 0);
+                inputNames.add(n);
+            }
     }
 
     ~Device() override
@@ -102,9 +126,9 @@ public:
     bool isUsable() const { return client != nullptr; }
 
     juce::StringArray getOutputChannelNames() override { return channelNames; }
-    juce::StringArray getInputChannelNames() override { return {}; }
+    juce::StringArray getInputChannelNames() override { return inputNames; }
 
-    // All 18 channels are always processed: the selector's per-channel ticks do not apply to this device.
+    // All channels are always processed: the selector's per-channel ticks do not apply to this device.
     std::optional<juce::BigInteger> getDefaultOutputChannels() const override { return allChannels(); }
 
     juce::Array<double> getAvailableSampleRates() override
@@ -131,6 +155,7 @@ public:
     void close() override
     {
         stop();
+        connectedMaskValid.store(false);
         if (client != nullptr && deviceIsOpen)
             Api::get().deactivate(client);
         deviceIsOpen = false;
@@ -168,15 +193,20 @@ public:
     }
     int getCurrentBitDepth() override { return 32; }
     juce::BigInteger getActiveOutputChannels() const override { return allChannels(); }
-    juce::BigInteger getActiveInputChannels() const override { return {}; }
+    juce::BigInteger getActiveInputChannels() const override
+    {
+        juce::BigInteger b;
+        b.setRange(0, numIn, true);
+        return b;
+    }
     int getOutputLatencyInSamples() override { return getCurrentBufferSizeSamples(); }
     int getInputLatencyInSamples() override { return 0; }
 
 private:
-    static juce::BigInteger allChannels()
+    juce::BigInteger allChannels() const
     {
         juce::BigInteger b;
-        b.setRange(0, kNumChannels, true);
+        b.setRange(0, numCh, true);
         return b;
     }
 
@@ -185,21 +215,39 @@ private:
     int process(unsigned int nframes)
     {
         auto &api = Api::get();
-        float *outs[kNumChannels];
-        for (int i = 0; i < kNumChannels; i++)
+        float *outs[kMaxChannels];
+        for (int i = 0; i < numCh; i++)
             outs[i] = static_cast<float *>(api.port_get_buffer(ports[i], nframes));
+
+        if (api.port_connected != nullptr)
+        {
+            uint64_t mask = 0;
+            for (int i = 0; i < numCh; i++)
+                if (api.port_connected(ports[i]) > 0)
+                    mask |= (uint64_t)1 << i;
+            connectedMask.store(mask);
+            connectedMaskValid.store(true);
+        }
+
+        const float *ins[2] = {nullptr, nullptr};
+        for (int i = 0; i < numIn; i++)
+            ins[i] = static_cast<const float *>(api.port_get_buffer(inPorts[i], nframes));
 
         const juce::ScopedLock sl(callbackLock);
         if (callback != nullptr)
-            callback->audioDeviceIOCallbackWithContext(nullptr, 0, outs, kNumChannels, (int)nframes, {});
+            callback->audioDeviceIOCallbackWithContext(numIn > 0 ? ins : nullptr, numIn, outs, numCh, (int)nframes, {});
         else
-            for (int i = 0; i < kNumChannels; i++)
+            for (int i = 0; i < numCh; i++)
                 juce::FloatVectorOperations::clear(outs[i], (int)nframes);
         return 0;
     }
 
     Api::Client *client = nullptr;
-    Api::Port *ports[kNumChannels] = {};
+    Api::Port *ports[kMaxChannels] = {};
+    int numCh = kNumPartChannels;
+    Api::Port *inPorts[2] = {};
+    int numIn = 0;
+    juce::StringArray inputNames;
     juce::StringArray channelNames;
     juce::String lastError;
     bool deviceIsOpen = false;
@@ -231,7 +279,7 @@ public:
     {
         if (wantInputNames || !available)
             return {};
-        return {"JiV-881 (main + 8 Parts)"};
+        return {drumPorts ? "JiV-881 (main + 8 Parts + 16 drum notes)" : "JiV-881 (main + 8 Parts)"};
     }
     int getDefaultDeviceIndex(bool) const override { return 0; }
     int getIndexOfDevice(juce::AudioIODevice *device, bool asInput) const override

@@ -383,7 +383,23 @@ struct MCU {
     // Separate outputs (GitHub issue #3): dry audio of each Performance Part (the chip voices the firmware
     // allocated for it, see Pcm::PCM_Write()), rendered at the same time as the main mix. Effects and
     // unattributed voices stay in the main stream only, so main - sum(parts) is the "FX" remainder.
-    static const int kNumPartStreams = 8;
+    // Streams 0-7 = Performance Parts; 8-23 = one per drum note kFirstDrumNote.. of the rhythm Part (the notes
+    // given their own output leave stream 7), only rendered when setSeparateParts() asks for them.
+    static const int kNumDrumStreams = 16;
+    static const int kFirstDrumNote = 36;
+    static const int kNumPartStreams = 8 + kNumDrumStreams;
+    // General MIDI drum names of notes 36-51 (a JV-880 kit follows that layout loosely), for output names.
+    static constexpr const char *kDrumNoteNames[kNumDrumStreams] = {
+        "kick", "rim", "snare", "clap", "snare2", "tom_lo", "hat_closed", "tom_lo2",
+        "hat_pedal", "tom_mid", "hat_open", "tom_mid2", "tom_hi", "crash", "tom_hi2", "ride"};
+    int activePartStreams = 0;
+    // Per stream: did it carry any signal in this block / the previous one? Silent streams skip their resampler.
+    // Streams routed to their own output leave the main mix: subtracted here, before resampling, so every stream
+    // keeps its own phase and a silent one can skip its resampler. Bit p = stream p.
+    uint32_t routedMask = 0;
+    float routedSumL = 0.f, routedSumR = 0.f;
+    bool partNonZero[kNumPartStreams] = {};
+    int partQuietBlocks[kNumPartStreams] = {};
     std::vector<float> part_buffer[kNumPartStreams][2];
     void* resamplePart[kNumPartStreams][2] = {};
     bool separateParts = false;
@@ -397,7 +413,12 @@ struct MCU {
     void setExternalInput(const float *l, const float *r, int frames) { extInL = l; extInR = r; extInFrames = frames; }
     // Current external sample pair at the 64 kHz write position, in the PCM chip's 20-bit domain.
     void MCU_ExternalInput(int &l, int &r);
-    void setSeparateParts(bool on);
+    void setSeparateParts(bool on, bool drumOutputs = false);
+    void setRoutedStreams(uint32_t mask) { routedMask = mask; }
+    // Which drum notes (bit k = note kFirstDrumNote + k) have their output in use; the others stay in the Part 8 stream.
+    uint32_t drumSplitMask = 0xffff;
+    void setDrumSplitMask(uint32_t mask) { drumSplitMask = mask; }
+    void setForceRhythmPart(bool on) { pcm.forceRhythmPart = on; }
     void MCU_PostPartSamples(const int *partL, const int *partR);
     int savedDestSampleRate = 0;
     double samplesError = 0;

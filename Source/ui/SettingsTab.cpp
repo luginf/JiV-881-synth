@@ -76,13 +76,18 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   {
     if (auto *holder = juce::StandalonePluginHolder::getInstance())
     {
+      // The user chose to feed the audio input through the effects: do not mute it on its own.
+      if (processor.getAudioInput())
+        holder->getMuteInputValue() = false;
 #if JUCE_LINUX
-      // Our own JACK device type with 18 free, named output ports (JUCE's offers 8 auto-connected ones).
+      // Our own JACK device type with 18 (50 with the drum outputs) free, named output ports (JUCE's offers 8 auto-connected ones).
       bool alreadyAdded = false;
       for (auto *type : holder->deviceManager.getAvailableDeviceTypes())
         alreadyAdded = alreadyAdded || type->getTypeName() == jivjack::kTypeName;
       if (!alreadyAdded)
       {
+        jivjack::drumPorts = processor.getDrumOutputs();
+        jivjack::inputPorts = processor.getAudioInput();
         holder->deviceManager.addAudioDeviceType(std::make_unique<jivjack::DeviceType>());
         // The device state saved by the Standalone was restored before this type existed: switch back to it.
         if (processor.getPreferredAudioDeviceType() == jivjack::kTypeName)
@@ -96,7 +101,7 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
           holder->deviceManager,
           0, holder->getNumInputChannels(),
           // Up to 18 outputs: main + one stereo pair per Performance Part (separate outputs, issue #3)
-          0, juce::jmax(holder->getNumOutputChannels(), 2 + 2 * VirtualJVProcessor::kNumPerformanceParts),
+          0, juce::jmax(holder->getNumOutputChannels(), 2 + 2 * (VirtualJVProcessor::kNumPerformanceParts + (processor.getDrumOutputs() ? MCU::kNumDrumStreams : 0))),
           true,                    // showMidiInputOptions
           processor.producesMidi(), // showMidiOutputSelector
           true,                    // showChannelsAsStereoPairs
@@ -178,6 +183,21 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
     processor.setDisplayMode((VirtualJVProcessor::DisplayMode)(displayModeCombo.getSelectedId() - 1));
   };
 
+  addAndMakeVisible(extraFeaturesHeaderLabel);
+  extraFeaturesHeaderLabel.setText("Extra features", juce::dontSendNotification);
+  extraFeaturesHeaderLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+  extraFeaturesHeaderLabel.setTooltip("Optional additions beyond the original JV-880: off by default, not part of the basic settings.");
+
+  if (processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+  {
+    addAndMakeVisible(audioInputToggle);
+    audioInputToggle.setToggleState(processor.getAudioInput(), juce::dontSendNotification);
+    audioInputToggle.setTooltip("Feeds the audio input of your audio device through the JV-880 reverb and chorus (use it as "
+                                "an effects processor). Beware of feedback with speakers and a microphone. In a plugin, "
+                                "just enable the \"Input\" bus in your DAW. Applies after a restart.");
+    audioInputToggle.addListener(this);
+  }
+
   addAndMakeVisible(extraPolyphonyToggle);
   extraPolyphonyToggle.setToggleState(processor.getExtraPolyphony(), juce::dontSendNotification);
   extraPolyphonyToggle.addListener(this);
@@ -195,6 +215,14 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   mainFullMixToggle.setTooltip("Separate Part outputs: keep the complete mix on the main output and send each Part to its own "
                                "output as a copy. Off: Parts leave the main output, which then only has the effects return.");
   mainFullMixToggle.addListener(this);
+
+  addAndMakeVisible(drumOutputsToggle);
+  drumOutputsToggle.setToggleState(processor.getDrumOutputs(), juce::dontSendNotification);
+  drumOutputsToggle.setTooltip("Adds 16 stereo outputs \"Drum 1-16\", one per drum note 36-51 of the rhythm Part (Part 8), "
+                               "e.g. kick, snare, hats, toms, crash. Notes outside that range stay on the Part 8 output. "
+                               "Effects stay on the main output. Applies to plugin instances created after this change "
+                               "(Standalone: restart, then pick an audio device with 50 outputs).");
+  drumOutputsToggle.addListener(this);
 
   if (processor.wrapperType != juce::AudioProcessor::wrapperType_Standalone)
   {
@@ -292,7 +320,6 @@ void SettingsTab::resized()
   masterTuneSlider  .setBounds(sliderLeft3, top, width, height);
   masterVolumeSlider.setBounds(sliderLeft3, row2Top, width, height);
   dspLoadLabel      .setBounds(sliderLeft1 - 90, row2Top, width, height);
-  extraPolyphonyToggle.setBounds(sliderLeft2 - 90, row2Top, width + 60, height);
 
   // Display mode (Alan's request, 2026-09-08) - see PanelSkin.h/VirtualJVProcessor::DisplayMode.
   const auto displaySectionTop = row2Top + height + 20;
@@ -312,8 +339,15 @@ void SettingsTab::resized()
   // see refreshRomSection().
   const auto romSectionTop = displaySectionTop + 22 + 20;
   romSectionHeaderLabel.setBounds(10, romSectionTop, 400, 22);
-  romStatusLabel.setBounds(10, romSectionTop + 24, getWidth() - 20, 36);
-  romPathLabel.setBounds(10, romSectionTop + 62, getWidth() - 20, 20);
+  romStatusLabel.setBounds(10, romSectionTop + 24, 440, 36);
+  romPathLabel.setBounds(10, romSectionTop + 62, 440, 20);
+
+  // Extra features: optional additions beyond the original JV-880, kept apart from the basic settings,
+  // to the right of the ROM Folder block.
+  extraFeaturesHeaderLabel.setBounds(460, romSectionTop + 16, 340, 22);
+  drumOutputsToggle.setBounds(460, romSectionTop + 46, 340, 24);
+  extraPolyphonyToggle.setBounds(460, romSectionTop + 74, 340, 24);
+  audioInputToggle.setBounds(460, romSectionTop + 102, 340, 24);
   romBrowseButton.setBounds(10, romSectionTop + 86, 110, 24);
   romResetButton.setBounds(126, romSectionTop + 86, 110, 24);
   romReloadButton.setBounds(242, romSectionTop + 86, 140, 24);
@@ -375,6 +409,12 @@ void SettingsTab::buttonClicked(juce::Button *button)
     break;
   case MainFullMix:
     processor.setMainFullMix(mainFullMixToggle.getToggleState());
+    break;
+  case AudioInput:
+    processor.setAudioInput(audioInputToggle.getToggleState());
+    break;
+  case DrumOutputs:
+    processor.setDrumOutputs(drumOutputsToggle.getToggleState());
     break;
   case MultiOut:
     processor.setMultiOutBuses(multiOutToggle.getToggleState());

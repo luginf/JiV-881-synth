@@ -66,6 +66,7 @@ struct pcm_t {
     int slot_l[32];
     int slot_r[32];
     uint8_t slot_owner[32]; // Performance Part (0-7) that allocated each voice, see Pcm::PCM_Write()
+    uint8_t slot_note[32];  // MIDI note the firmware allocated each voice for (sram[0x1b6 + voice]), for per-drum outputs
 };
 
 struct MCU;
@@ -75,6 +76,8 @@ struct Pcm {
     Pcm(MCU *mcu);
 
     pcm_t pcm = {0};
+    bool forceRhythmPart = false;     // Patch mode on a rhythm set: every voice belongs to the rhythm Part
+    bool drumTrackingEnabled = false; // split Part 8 (rhythm) voices per drum note, see MCU::setSeparateParts()
     bool partTrackingEnabled = false; // set by MCU when separate outputs are in use
     uint8_t waverom1[0x200000];
     uint8_t waverom2[0x200000];

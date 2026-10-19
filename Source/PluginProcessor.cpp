@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include "JackMultiOut.h"
 #include <cstring>
 
 namespace {
@@ -183,6 +184,10 @@ int loadPersistedKeyboardOctaves() { return iniGet(readIni(), "keyboard", "octav
 
 void savePersistedKeyboardOctaves(int n) { iniUpdate({{"keyboard", "octaves", juce::String(n)}}); }
 
+int loadPersistedKeyboardVelocity() { return iniGet(readIni(), "keyboard", "velocity", "100").getIntValue(); }
+
+void savePersistedKeyboardVelocity(int v) { iniUpdate({{"keyboard", "velocity", juce::String(v)}}); }
+
 void loadPersistedWindowSize(int &w, int &h) {
   auto d = readIni();
   w = iniGet(d, "layout", "window_w", "0").getIntValue();
@@ -245,6 +250,25 @@ void savePersistedExtraPolyphony(bool enabled) {
 // change only applies to instances created afterwards.
 bool loadPersistedMultiOut() {
   return iniGet(readIni(), "audio", "multi_out", "0").getIntValue() != 0;
+}
+
+// Per-drum-note outputs (16 extra stereo "Drum n" buses, notes 36-51 of the rhythm Part). Read when the plugin is
+// created, like multi_out.
+bool loadPersistedDrumOutputs() {
+  return iniGet(readIni(), "audio", "drum_outputs", "0").getIntValue() != 0;
+}
+
+void savePersistedDrumOutputs(bool enabled) {
+  iniUpdate({{"audio", "drum_outputs", enabled ? "1" : "0"}});
+}
+
+// Standalone: start with the stereo audio input enabled, to use the app as an effects processor (issue #16).
+bool loadPersistedAudioInput() {
+  return iniGet(readIni(), "audio", "audio_input", "0").getIntValue() != 0;
+}
+
+void savePersistedAudioInput(bool enabled) {
+  iniUpdate({{"audio", "audio_input", enabled ? "1" : "0"}});
 }
 
 void savePersistedMultiOut(bool enabled) {
@@ -345,13 +369,16 @@ juce::AudioProcessor::BusesProperties VirtualJVProcessor::makeBusesProperties() 
   if (juce::PluginHostType::getPluginLoadedAs() == juce::AudioProcessor::wrapperType_Standalone)
     // ...and a DISABLED input bus: the player always hands over a layout with one input bus entry, and JUCE rejects it
     // when our input bus count differs (0 vs 1). Disabled, it adds no input channel and no "input muted" notice.
-    return BusesProperties().withInput("Input", stereo, false).withOutput("Output", stereo, true);
+    // Enabled only when the user asked for it ("Extra features"): the Standalone then shows its usual input-muted
+    // notice unless the input is unmuted, which SettingsTab does at startup for that option.
+    return BusesProperties().withInput("Input", stereo, loadPersistedAudioInput()).withOutput("Output", stereo, true);
 
   const bool partBusesOn = loadPersistedMultiOut();
+  const bool drumBuses = loadPersistedDrumOutputs();
+  auto props = BusesProperties();
   // Optional external audio input (GitHub issue #16), DISABLED by default so a host never shows an "input
   // muted" notice; the user enables it in the DAW to run audio through the reverb/chorus.
-  return BusesProperties()
-      .withInput("Input", stereo, false)
+  props = props.withInput("Input", stereo, false)
       .withOutput("Output", stereo, true)
       .withOutput("Part 1", stereo, partBusesOn)
       .withOutput("Part 2", stereo, partBusesOn)
@@ -361,6 +388,12 @@ juce::AudioProcessor::BusesProperties VirtualJVProcessor::makeBusesProperties() 
       .withOutput("Part 6", stereo, partBusesOn)
       .withOutput("Part 7", stereo, partBusesOn)
       .withOutput("Part 8 (Rhythm)", stereo, partBusesOn);
+  // 16 more, disabled until the host enables them: one per drum note 36-51 of the rhythm Part.
+  if (drumBuses)
+    for (int k = 0; k < MCU::kNumDrumStreams; k++)
+      props = props.withOutput("Drum " + juce::String(k + 1) + " - " + juce::String(MCU::kDrumNoteNames[k]).replaceCharacter('_', ' ')
+                                   + " (note " + juce::String(MCU::kFirstDrumNote + k) + ")", stereo, false);
+  return props;
 }
 
 VirtualJVProcessor::VirtualJVProcessor()
@@ -371,6 +404,7 @@ VirtualJVProcessor::VirtualJVProcessor()
 
   loadPersistedKeyboardSettings(keyboardPcInput, keyboardPcLayout);
   keyboardNumOctaves = juce::jlimit(0, 4, loadPersistedKeyboardOctaves());
+  keyboardVelocity = juce::jlimit(1, 127, loadPersistedKeyboardVelocity());
   loadPersistedWindowSize(savedWindowW, savedWindowH);
   {
     juce::StringArray lines;
@@ -1145,6 +1179,67 @@ bool VirtualJVProcessor::attemptLoadRoms() {
     std::fprintf(stderr, "[extin] sine rms=%.5f (input rms 0.212)\n", run(1000, true));
     std::fprintf(stderr, "[extin] tail 0-500ms rms=%.5f\n", run(500, false));
     std::fprintf(stderr, "[extin] tail 500-1500ms rms=%.5f\n", run(1000, false));
+    std::exit(0);
+  }
+
+  // Issue #3 follow-up: per-drum-note outputs. Standalone-style 50-channel main bus (main + 8 Parts + 16 drum notes);
+  // a drum note must show up on its own "Drum n" pair and leave the Part 8 pair, other notes stay on Part 8.
+  if (std::getenv("JV880_SELFTEST_DRUMOUT")) {
+    const int sampleRate = 44100, blockFrames = 512, nch = 50;
+    BusesLayout lay = getBusesLayout();
+    lay.outputBuses.getReference(0) = juce::AudioChannelSet::discreteChannels(nch);
+    std::fprintf(stderr, "[drumout] layout set=%d\n", (int)setBusesLayout(lay));
+    setRateAndBufferSizeDetails(sampleRate, blockFrames);
+    prepareToPlay(sampleRate, blockFrames);
+    juce::AudioBuffer<float> buf(nch, blockFrames);
+    juce::MidiBuffer midi;
+    double e[nch / 2];
+    auto run = [&](int ms) {
+      for (int c = 0; c < nch / 2; c++) e[c] = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += blockFrames) {
+        buf.clear();
+        processBlock(buf, midi);
+        midi.clear();
+        for (int c = 0; c < nch / 2; c++)
+          for (int i = 0; i < blockFrames; i++) e[c] += buf.getSample(2 * c, i) * buf.getSample(2 * c, i);
+      }
+    };
+    run(2500);
+    // Patch mode on a rhythm set first: the drum outputs must work there too.
+    setPerformanceModeEnabled(false); // the session file may have restored Performance mode
+    run(1500);
+    for (int i = 0; i < romPatchCapacity; i++)
+      if (patchInfos[i].present && patchInfos[i].drums) { setCurrentProgram(i); break; }
+    run(7000);
+    for (int note : {36, 38}) {
+      midi.addEvent(juce::MidiMessage::noteOn(10, note, (juce::uint8)110), 0);
+      run(600);
+      std::fprintf(stderr, "[drumout] isDrums=%d perf=%d nvram11=%02x\n", (int)status.isDrums, (int)performanceModeEnabled, mcu->nvram[0x11]);
+      std::fprintf(stderr, "[drumout] PATCH mode rhythm, note %d: main %.3f | Part8 %.3f | drum pairs:", note, e[0], e[8]);
+      for (int k = 0; k < 16; k++) std::fprintf(stderr, " %.3f", e[9 + k]);
+      std::fprintf(stderr, "\n");
+      midi.addEvent(juce::MidiMessage::noteOff(10, note), 0);
+      run(2500);
+    }
+    for (int i = 0; i < romPatchCapacity; i++)
+      if (patchInfos[i].present && patchInfos[i].drums) { sendPatchToPerformancePart(i, kNumPerformanceParts - 1); break; }
+    setPerformancePartParams(kNumPerformanceParts - 1, 8, 100, 64, true);
+    setPerformanceModeEnabled(true);
+    run(1500);
+    {
+      const auto t0 = juce::Time::getMillisecondCounterHiRes();
+      run(3000);
+      std::fprintf(stderr, "[drumout] idle: 3 s of audio rendered in %.0f ms\n", juce::Time::getMillisecondCounterHiRes() - t0);
+    }
+    for (int note : {36, 38, 42, 49, 60, 72}) {
+      midi.addEvent(juce::MidiMessage::noteOn(8, note, (juce::uint8)110), 0);
+      run(600);
+      std::fprintf(stderr, "[drumout] note %d (-> Drum %d): main %.3f | Part8 %.3f | drum pairs:", note, note - 35, e[0], e[8]);
+      for (int k = 0; k < 16; k++) std::fprintf(stderr, " %.3f", e[9 + k]);
+      std::fprintf(stderr, "\n");
+      midi.addEvent(juce::MidiMessage::noteOff(8, note), 0);
+      run(2500);
+    }
     std::exit(0);
   }
 
@@ -2030,6 +2125,11 @@ void VirtualJVProcessor::setSequencerView(seqview::View view) {
 void VirtualJVProcessor::setKeyboardNumOctaves(int numOctaves) {
   keyboardNumOctaves = juce::jlimit(0, 4, numOctaves);
   savePersistedKeyboardOctaves(keyboardNumOctaves);
+}
+
+void VirtualJVProcessor::setKeyboardVelocity(int velocity) {
+  keyboardVelocity = juce::jlimit(1, 127, velocity);
+  savePersistedKeyboardVelocity(keyboardVelocity);
 }
 
 void VirtualJVProcessor::setWindowSize(int w, int h) {
@@ -3164,6 +3264,14 @@ void VirtualJVProcessor::setPreferredAudioDeviceType(const juce::String &type) {
 
 bool VirtualJVProcessor::getMultiOutBuses() const { return loadPersistedMultiOut(); }
 
+bool VirtualJVProcessor::getDrumOutputs() const { return loadPersistedDrumOutputs(); }
+
+void VirtualJVProcessor::setDrumOutputs(bool enabled) { savePersistedDrumOutputs(enabled); }
+
+bool VirtualJVProcessor::getAudioInput() const { return loadPersistedAudioInput(); }
+
+void VirtualJVProcessor::setAudioInput(bool enabled) { savePersistedAudioInput(enabled); }
+
 void VirtualJVProcessor::setMultiOutBuses(bool enabled) { savePersistedMultiOut(enabled); }
 
 void VirtualJVProcessor::setExtraPolyphony(bool enabled) {
@@ -3672,18 +3780,32 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
   // enabled at least one "Part n" bus or the Standalone device offers more than two outputs; otherwise the
   // engine renders the plain stereo mix exactly as before.
   const int mainChannels = getChannelCountOfBus(false, 0);
-  bool partBusOn[8] = {false};
-  bool anyPartBus = false;
-  for (int p = 0; p < 8; p++) {
+  // Streams 0-7 = Parts, 8-23 = drum notes 36-51 of the rhythm Part ("Drum n" buses / channels 18+).
+  bool partBusOn[MCU::kNumPartStreams] = {false};
+  bool anyPartBus = false, anyDrumBus = false;
+  for (int p = 0; p < MCU::kNumPartStreams; p++) {
     if (mainChannels == 2 && getBusCount(false) > 1 + p) {
       if (auto *bus = getBus(false, 1 + p))
         partBusOn[p] = bus->isEnabled();
     } else if (mainChannels > 2) {
       partBusOn[p] = 3 + 2 * p < mainChannels;
+#if JUCE_LINUX
+      // The JiV-881 JACK device registers every port: only the connected ones count as outputs in use.
+      if (partBusOn[p] && jivjack::connectedMaskValid.load())
+        partBusOn[p] = ((jivjack::connectedMask.load() >> (2 + 2 * p)) & 3u) != 0;
+#endif
     }
-    anyPartBus = anyPartBus || partBusOn[p];
+    if (p < 8)
+      anyPartBus = anyPartBus || partBusOn[p];
+    else
+      anyDrumBus = anyDrumBus || partBusOn[p];
   }
-  const bool splitParts = performanceModeEnabled && anyPartBus;
+  // A drum bus alone is enough to split (the rhythm Part stays in the main mix then).
+  // Patch mode playing a rhythm set: all its voices are the rhythm Part, so the drum outputs work there too.
+  const bool patchDrums = !performanceModeEnabled && status.isDrums && anyDrumBus;
+  const bool splitParts = (performanceModeEnabled && (anyPartBus || anyDrumBus)) || patchDrums;
+  const bool splitDrums = splitParts && anyDrumBus;
+  mcu->setForceRhythmPart(patchDrums);
   if (std::getenv("JV880_DEBUG_BUSES")) {
     static int blocks = 0;
     if (++blocks % 400 == 1)
@@ -3691,16 +3813,32 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
                    buffer.getNumChannels(), getBusCount(false), (int)performanceModeEnabled, (int)anyPartBus, (int)splitParts, (int)mainFullMix.load(),
                    (int)wrapperType);
   }
-  mcu->setSeparateParts(splitParts);
+  // Routed streams leave the main mix inside the engine (before resampling). Main + Sub mode subtracts its own below.
+  uint32_t routedMask = 0;
+  if (splitParts && outputMode != 1 && !mainFullMix)
+    for (int p = 0; p < MCU::kNumPartStreams; p++)
+      if (partBusOn[p])
+        routedMask |= 1u << p;
+  uint32_t drumMask = 0;
+  for (int k = 0; k < MCU::kNumDrumStreams; k++)
+    if (partBusOn[8 + k])
+      drumMask |= 1u << k;
+  mcu->setRoutedStreams(routedMask);
+  mcu->setDrumSplitMask(drumMask);
+  if (mcu2 != nullptr) {
+    mcu2->setRoutedStreams(routedMask);
+    mcu2->setDrumSplitMask(drumMask);
+  }
+  mcu->setSeparateParts(splitParts, splitDrums);
   if (mcu2 != nullptr)
-    mcu2->setSeparateParts(splitParts);
+    mcu2->setSeparateParts(splitParts, splitDrums);
   for (int c = 2; c < buffer.getNumChannels(); c++)
     buffer.clear(c, 0, numSamples);
 
-  float *partPtrL[2][8], *partPtrR[2][8];
+  float *partPtrL[2][MCU::kNumPartStreams], *partPtrR[2][MCU::kNumPartStreams];
   if (splitParts)
     for (int e = 0; e < 2; e++)
-      for (int p = 0; p < 8; p++) {
+      for (int p = 0; p < (splitDrums ? MCU::kNumPartStreams : 8); p++) {
         auto &l = partScratch[e][p][0];
         auto &r = partScratch[e][p][1];
         if ((int)l.size() < numSamples) { // beyond prepareToPlay's size: rare, allocates once
@@ -3744,7 +3882,7 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
       channelDataR[i] += extraScratchR[(size_t)i];
     }
     if (splitParts)
-      for (int p = 0; p < 8; p++)
+      for (int p = 0; p < (splitDrums ? MCU::kNumPartStreams : 8); p++)
         for (int i = 0; i < numSamples; ++i) {
           partPtrL[0][p][i] += partPtrL[1][p][i];
           partPtrR[0][p][i] += partPtrR[1][p][i];
@@ -3782,9 +3920,9 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
       }
     }
   } else if (splitParts) {
-    // Each routed Part leaves the main mix and goes to its own bus; the main output keeps the effects return,
-    // unrouted Parts and anything the firmware did not attribute to a Part.
-    for (int p = 0; p < 8; p++) {
+    // Each routed Part (or drum note) leaves the main mix and goes to its own bus; the main output keeps the effects
+    // return, unrouted Parts and anything the firmware did not attribute to a Part.
+    for (int p = 0; p < MCU::kNumPartStreams; p++) {
       if (!partBusOn[p])
         continue;
       float *outL, *outR;
@@ -3799,10 +3937,6 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
       for (int i = 0; i < numSamples; ++i) {
         outL[i] = partPtrL[0][p][i];
         outR[i] = partPtrR[0][p][i];
-        if (!mainFullMix) {
-          channelDataL[i] -= partPtrL[0][p][i];
-          channelDataR[i] -= partPtrR[0][p][i];
-        }
       }
     }
   }
@@ -3937,6 +4071,11 @@ void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
 }
 
 void VirtualJVProcessor::injectTestNote(int channel, int note, float velocity, bool on) {
+  // GitHub issue #13: without MIDI Remap the on-screen keyboard sends the note on all 16 channels, and Patch mode forces
+  // every message onto the one channel (processBlock()): 16 identical Note Ons stacked up, far too loud, distorted, and
+  // stealing voices (timbre changing on higher notes). In Patch mode a single copy is enough.
+  if (!performanceModeEnabled && !keyboardMidiRemap && channel != 1)
+    return;
   auto message = on ? juce::MidiMessage::noteOn(channel, note, velocity)
                      : juce::MidiMessage::noteOff(channel, note, velocity);
   message.setTimeStamp(juce::Time::getMillisecondCounterHiRes() * 0.001);

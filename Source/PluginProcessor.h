@@ -148,6 +148,8 @@ public:
     int getKeyboardPcLayout() const override { return keyboardPcLayout; }
     void setKeyboardPcLayout(int layout) override;
     int getKeyboardNumOctaves() const override { return keyboardNumOctaves; }
+    int getKeyboardVelocity() const override { return keyboardVelocity; }
+    void setKeyboardVelocity(int velocity) override;
     // 0 = resizable (as many keys as the width allows), 2 or 4 = fixed octaves. Kept in settings.ini.
     void setKeyboardNumOctaves(int numOctaves) override;
     bool isNoteActive(int note) const override {
@@ -325,6 +327,12 @@ public:
     std::atomic<bool> mainFullMix { false };
     juce::AudioProcessorEditor *safeActiveEditor() const; // getActiveEditor() only on the message thread, else nullptr
     bool getMultiOutBuses() const;
+    // One stereo output per drum note 36-51 of the rhythm Part (applies to instances created afterwards).
+    bool getDrumOutputs() const;
+    void setDrumOutputs(bool enabled);
+    // Standalone: audio input on at startup, processed through the reverb/chorus (restart to apply).
+    bool getAudioInput() const;
+    void setAudioInput(bool enabled);
     void setMultiOutBuses(bool enabled);
     bool getExtraPolyphony() const { return extraPolyphony; }
     void setExtraPolyphony(bool enabled);
@@ -392,7 +400,7 @@ public:
     std::vector<float> extraScratchL, extraScratchR;
     std::vector<float> extInScratchL, extInScratchR; // host input copied before the in-place render (issue #16)
     // Separate outputs (GitHub issue #3): per-Part dry audio of each engine, see MCU::setSeparateParts().
-    std::vector<float> partScratch[2][8][2]; // [engine][part][L/R]
+    std::vector<float> partScratch[2][MCU::kNumPartStreams][2]; // [engine][stream: 8 Parts + 16 drum notes][L/R]
     void rebuildExtraEngine();
     void dropExtraEngine();
     // Zero-initialised so the nullptr checks in setStateInformation()/setCurrentProgram() (an
@@ -621,6 +629,7 @@ private:
     bool keyboardPcInput = false;
     int keyboardPcLayout = 0;
     int keyboardNumOctaves = 2;
+    int keyboardVelocity = 100;
     float masterVolume = 1.0f;
     // After an expansion swap the firmware boots, and a boot-time load of a patch that uses the new board's
     // waves can end in "Wave number error". So the engine boots on a ROM-native patch, and the real one is

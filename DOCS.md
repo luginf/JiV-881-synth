@@ -53,9 +53,11 @@ real hardware's ROM does.
   (Browse/Use Default/Reload ROMs - can be changed and reloaded without restarting), and the
   on-screen display mode (see below). In Standalone builds only, this is also where you pick your
   audio/MIDI device and buffer size/sample rate (in a plugin, your DAW/host owns that instead).
-  Also here: **Extra polyphony** (a second engine for 56 voices in Performance mode, about 2x the
-  CPU) and the separate-outputs options below. All settings are kept in one `settings.ini` next to
-  the ROMs (`~/.config/JV880/` or `~/.config/JiV881/`).
+  The **Extra features** block (off by default, beyond the original JV-880) holds **Separate drum
+  outputs**, **Extra polyphony** (a second engine for 56 voices in Performance mode, about 2x the
+  CPU) and, Standalone only, **Audio input through effects** - see "Separate outputs" and "Audio
+  input" below. All settings are kept in one `settings.ini` next to the ROMs (`~/.config/JV880/` or
+  `~/.config/JiV881/`).
 - **Panel**: only shown when Display is set to "LCD only" (see below) - a row of clickable
   physical panel buttons plus the DATA dial, for driving the real firmware's own screens directly
   (EDIT/SYSTEM/RHYTHM/UTILITY, cursor, TONE SELECT, etc.), same as pressing them on real hardware.
@@ -131,6 +133,13 @@ Not yet done: no app store distribution (releases ship a debug-keystore-signed A
 real phone (see `.claude/dev-notes/android.md` for the D-110 sibling
 project's own catalogue of JUCE/Android gotchas this port leans on).
 
+## On-screen keyboard
+
+Right-click (long press on Android) on a key: *Hold note* (sustains that key), **Velocity** (60, 80,
+100, 127 or a custom value; default 100, kept in `settings.ini`), MIDI channel/remap, PC-keyboard input,
+keyboard size. Without *MIDI Remap* in Patch mode, a note is sent once (it used to go out on all 16
+channels, which stacked 16 identical notes).
+
 ## Separate outputs (Performance mode)
 
 Each Part can be sent to its own stereo output. The chip's 28 voices are shared, but the firmware
@@ -145,8 +154,44 @@ effects bus on the JV-880) stay on the main output. Main + Parts adds up to the 
 - **Settings**: *Outputs: Main + Parts / Main + Sub* (Sub = dry sum of the Parts whose Output is Sub,
   like the hardware's SUB jack; "Patch" counts as Main) and *Main out = full mix* (Parts are copied
   instead of removed from the main).
-- Only in Performance mode; in Patch mode everything stays on the main. Windows/macOS: same plugin
-  buses and multi-channel Standalone devices; the JACK type is Linux only.
+- Part outputs work only in Performance mode; in Patch mode everything stays on the main.
+  Windows/macOS: same plugin buses and multi-channel Standalone devices; the JACK type is Linux only.
+
+### Separate drum outputs (one output per drum note)
+
+An extra feature (Settings > Extra features > *Separate drum outputs (reload plugin)*, off by
+default, not part of the original JV-880, which only has Main and Sub). It splits the rhythm Part
+by drum note: the notes 36-51 (kick, rim, snare, clap, toms, hi-hats, crash, ride) each get a stereo
+output; any other note stays on the "Part 8 (Rhythm)" output. Reverb/chorus stay on the main output.
+
+- **Where**: 16 more plugin buses, "Drum 1 - kick (note 36)" to "Drum 16 - ride (note 51)" (off until your
+  host enables them). Standalone: channels 19-50, after the 8 Part pairs; the audio device must
+  offer 50 outputs. The *JACK (JiV-881 Part outputs)* type then has 50 ports (`drum01_kick_L/R`,
+  `drum02_rim_L/R`, `drum03_snare_L/R`...), against the Part ports `part1_L`..`part8_R`.
+- **Names**: fixed General MIDI names of the notes 36-51, a JV-880 kit follows that layout only
+  loosely; the note number is always exact.
+- **Apply**: tick the option, then reload the plugin / restart the app.
+- **When it works**: in **Performance mode** (rhythm set on Part 8, rhythm Part receiving on its
+  MIDI channel) and also in **Patch mode when the current patch is a Rhythm Set**. A Patch-mode tone
+  patch has no drum notes, so the drum outputs stay silent then (and the Part 1-7 outputs stay
+  silent in Patch mode with a rhythm set). To check a drum output, untick *Main out = full mix*:
+  with it ticked the main output also carries the full drum sound, which hides an unplugged
+  drum output.
+- **JACK**: only the ports that have a connection count as outputs in use. A drum note whose
+  `drumNN_...` port is not connected stays in the Part 8 output (same for unconnected `partN_` ports,
+  which stay in the main mix). Connect a port and its note leaves Part 8 on the next audio cycle.
+- Limits: the effects are not split; a voice stolen without its voice flag changing may stay on the
+  previous output for a moment.
+
+## Audio input (use as an effects processor)
+
+The JV-880 reverb and chorus can process external audio. Plugin (VST3/AU/LV2): enable the "Input"
+bus in your host (disabled by default, so no "input muted" notice). Standalone: tick Settings > Extra
+features > *Audio input through effects (restart)*; the input device is then unmuted and its channels
+appear in the audio selector (beware of feedback). On Linux, the *JACK (JiV-881 Part outputs)* type
+then also registers `input_L` / `input_R` ports. The input is mixed into the dry signal and sent to
+the effects; there is no send level of its own, so it follows the Performance/patch reverb and
+chorus levels (a patch with no reverb leaves it nearly dry).
 
 ## Desktop Standalone: names, icon, audio settings
 

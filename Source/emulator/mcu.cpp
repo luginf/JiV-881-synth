@@ -1130,8 +1130,9 @@ void unscramble(uint8_t *src, uint8_t *dst, int len)
 
 void MCU::MCU_PostSample(int *sample)
 {
-    sample_buffer_l[sample_write_ptr] = sample[0] / 2147483648.0;
-    sample_buffer_r[sample_write_ptr] = sample[1] / 2147483648.0;
+    sample_buffer_l[sample_write_ptr] = sample[0] / 2147483648.0 - routedSumL;
+    sample_buffer_r[sample_write_ptr] = sample[1] / 2147483648.0 - routedSumR;
+    routedSumL = routedSumR = 0.f;
     sample_write_ptr = (sample_write_ptr + 1) % audio_buffer_size;
 }
 
@@ -1152,23 +1153,36 @@ void MCU::MCU_ExternalInput(int &l, int &r)
     r = conv(xr);
 }
 
-void MCU::setSeparateParts(bool on)
+void MCU::setSeparateParts(bool on, bool drumOutputs)
 {
-    if (on == separateParts)
+    const int want = on ? (drumOutputs ? kNumPartStreams : 8) : 0;
+    if (want == activePartStreams)
         return;
-    if (on) {
+    if (want > 0) {
         for (int p = 0; p < kNumPartStreams; p++)
-            for (int c = 0; c < 2; c++)
-                part_buffer[p][c].assign(audio_buffer_size, 0.f);
-        memset(pcm.pcm.slot_l, 0, sizeof(pcm.pcm.slot_l));
-        memset(pcm.pcm.slot_r, 0, sizeof(pcm.pcm.slot_r));
-        memset(pcm.pcm.slot_owner, 0xff, sizeof(pcm.pcm.slot_owner));
+            for (int c = 0; c < 2; c++) {
+                if (p < want) {
+                    part_buffer[p][c].assign(audio_buffer_size, 0.f);
+                } else {
+                    if (resamplePart[p][c]) resample_close(resamplePart[p][c]);
+                    resamplePart[p][c] = nullptr;
+                    std::vector<float>().swap(part_buffer[p][c]);
+                }
+            }
+        if (activePartStreams == 0) {
+            memset(pcm.pcm.slot_l, 0, sizeof(pcm.pcm.slot_l));
+            memset(pcm.pcm.slot_r, 0, sizeof(pcm.pcm.slot_r));
+            memset(pcm.pcm.slot_owner, 0xff, sizeof(pcm.pcm.slot_owner));
+            memset(pcm.pcm.slot_note, 0xff, sizeof(pcm.pcm.slot_note));
+        }
         savedDestSampleRate = 0; // reopen every resampler, including the new ones, at the next block
         pcm.partTrackingEnabled = true;
+        pcm.drumTrackingEnabled = drumOutputs;
         separateParts = true;
     } else {
         separateParts = false;
         pcm.partTrackingEnabled = false;
+        pcm.drumTrackingEnabled = false;
         for (int p = 0; p < kNumPartStreams; p++)
             for (int c = 0; c < 2; c++) {
                 if (resamplePart[p][c]) resample_close(resamplePart[p][c]);
@@ -1176,11 +1190,19 @@ void MCU::setSeparateParts(bool on)
                 std::vector<float>().swap(part_buffer[p][c]);
             }
     }
+    activePartStreams = want;
 }
 
 void MCU::MCU_PostPartSamples(const int *partL, const int *partR)
 {
-    for (int p = 0; p < kNumPartStreams; p++) {
+    routedSumL = routedSumR = 0.f;
+    for (int p = 0; p < activePartStreams; p++) {
+        if (partL[p] != 0 || partR[p] != 0)
+            partNonZero[p] = true;
+        if (routedMask & (1u << p)) {
+            routedSumL += partL[p] / 2147483648.0f;
+            routedSumR += partR[p] / 2147483648.0f;
+        }
         part_buffer[p][0][sample_write_ptr] = partL[p] / 2147483648.0;
         part_buffer[p][1][sample_write_ptr] = partR[p] / 2147483648.0;
     }
@@ -1478,7 +1500,7 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
         resampleL = resample_open(1, ratio, ratio);
         resampleR = resample_open(1, ratio, ratio);
         if (separateParts)
-            for (int p = 0; p < kNumPartStreams; p++)
+            for (int p = 0; p < activePartStreams; p++)
                 for (int c = 0; c < 2; c++) {
                     if (resamplePart[p][c]) resample_close(resamplePart[p][c]);
                     resamplePart[p][c] = resample_open(1, ratio, ratio);
@@ -1494,15 +1516,25 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
     outR = resample_process(resampleR, ratio, sample_buffer_r, renderBufferFrames, false, &inUsedR, dataR, nFrames);
 
     if (separateParts) {
-        for (int p = 0; p < kNumPartStreams; p++)
+        for (int p = 0; p < activePartStreams; p++)
             for (int c = 0; c < 2; c++) {
                 float *out = c == 0 ? (partL ? partL[p] : nullptr) : (partR ? partR[p] : nullptr);
                 int used = 0;
-                if (out != nullptr && resamplePart[p][c] != nullptr)
+                // A stream that was silent for this block and the one before (the resampler's tail has died away)
+                // is output as silence without running the resampler: 24 streams of it are costly.
+                if (out != nullptr && !partNonZero[p] && partQuietBlocks[p] >= 2) {
+                    memset(out, 0, nFrames * sizeof(float));
+                } else if (out != nullptr && resamplePart[p][c] != nullptr)
                     resample_process(resamplePart[p][c], ratio, part_buffer[p][c].data(), renderBufferFrames, false, &used, out, nFrames);
 
             }
     }
+
+    if (separateParts)
+        for (int p = 0; p < activePartStreams; p++) {
+            partQuietBlocks[p] = partNonZero[p] ? 0 : partQuietBlocks[p] + 1;
+            partNonZero[p] = false;
+        }
 
     // The resampler was handed the first renderBufferFrames samples. Anything
     // past that is the odd-length overshoot described at the top of this
@@ -1521,7 +1553,7 @@ void MCU::updateSC55WithSampleRate(float *dataL, float *dataR, unsigned int nFra
                 leftover * sizeof(sample_buffer_r[0]));
     }
     if (leftover > 0 && separateParts)
-        for (int p = 0; p < kNumPartStreams; p++)
+        for (int p = 0; p < activePartStreams; p++)
             for (int c = 0; c < 2; c++)
                 memmove(part_buffer[p][c].data(), part_buffer[p][c].data() + renderBufferFrames, leftover * sizeof(float));
     sample_write_ptr = (int)leftover;

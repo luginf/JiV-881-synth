@@ -98,7 +98,11 @@ void Pcm::PCM_Write(uint32_t address, uint8_t data)
             const uint32_t added = pcm.voice_mask_pending & ~oldPending;
             for (int b = 0; b < 28; b++)
                 if (added & (1u << b))
+                {
                     pcm.slot_owner[b] = (mcu->sram[0x1d2 + b] >> 1) & 7;
+                    // The firmware also keeps the MIDI note of each voice in the table just below the owners.
+                    pcm.slot_note[b] = mcu->sram[0x1b6 + b];
+                }
         }
     }
     else if (address >= 0x20 && address < 0x24) // wave rom
@@ -461,17 +465,24 @@ inline void eram_pack(pcm_t *pcm, int addr, int val)
 // Dry sum of the chip voices owned by each Performance Part, in the same 20-bit domain as accum_l/r.
 static void post_part_samples(Pcm *self)
 {
-    int l[8] = {}, r[8] = {};
+    int l[MCU::kNumPartStreams] = {}, r[MCU::kNumPartStreams] = {};
     for (int s = 0; s < 28; s++)
     {
-        const int o = self->pcm.slot_owner[s];
+        int o = self->forceRhythmPart ? 7 : self->pcm.slot_owner[s];
         if (o < 8)
         {
+            // Rhythm Part (8): the notes with their own drum output leave the Part 8 stream.
+            if (o == 7 && self->drumTrackingEnabled)
+            {
+                const int k = (int)self->pcm.slot_note[s] - MCU::kFirstDrumNote;
+                if (k >= 0 && k < MCU::kNumDrumStreams && ((self->mcu->drumSplitMask >> k) & 1u))
+                    o = 8 + k;
+            }
             l[o] += self->pcm.slot_l[s];
             r[o] += self->pcm.slot_r[s];
         }
     }
-    for (int p = 0; p < 8; p++)
+    for (int p = 0; p < MCU::kNumPartStreams; p++)
     {
         l[p] = (int)((unsigned)(std::max(-0x80000, std::min(0x7ffff, l[p])) & ~3) << 12);
         r[p] = (int)((unsigned)(std::max(-0x80000, std::min(0x7ffff, r[p])) & ~3) << 12);

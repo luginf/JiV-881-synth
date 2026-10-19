@@ -52,6 +52,8 @@ private:
         SequencerEnabled = 14U,
         ExtraPolyphony   = 15U,
         MultiOut         = 16U,
+        DrumOutputs      = 19U,
+        AudioInput       = 20U,
         MainFullMix      = 17U,
         OutputMode       = 18U,
     };
@@ -68,6 +70,10 @@ private:
     juce::ComboBox outputModeCombo;
     Button mainFullMixToggle{ MainFullMix, "Main out = full mix" };
     Button multiOutToggle{ MultiOut, "Part outputs on (reload plugin)" };
+    // 16 extra stereo outputs, one per drum note 36-51 of the rhythm Part (Part 8); needs a reload / restart.
+    Button drumOutputsToggle{ DrumOutputs, "Separate drum outputs (reload plugin)" };
+    // Standalone only: audio input through the effects (use as a reverb/chorus processor), needs a restart.
+    Button audioInputToggle{ AudioInput, "Audio input through effects (restart)" };
     Button extraPolyphonyToggle{ ExtraPolyphony, "Extra polyphony (Performance, 2x CPU)" };
     // Plugin-side output trim, not a real JV-880 hardware/MIDI parameter (the real unit's
     // volume knob is an analog attenuator, nothing SysEx/nvram reaches) - applied as a plain
@@ -111,6 +117,7 @@ private:
     // Top-of-window display mode (Alan's request, 2026-09-08) - see VirtualJVProcessor::
     // DisplayMode/setDisplayMode() and PanelSkin.h for what each choice actually shows.
     juce::Label displaySectionHeaderLabel;
+    juce::Label extraFeaturesHeaderLabel; // optional, non-default features: separate drum outputs, extra polyphony
     juce::ComboBox displayModeCombo;
 
     // Sequencer on/off (Alan's request, 2026-09-09) - Standalone build only, same runtime
