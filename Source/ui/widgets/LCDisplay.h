@@ -34,6 +34,7 @@ public:
         BlackGreen  = 9U,
         BlackBlue   = 10U,
         BlackVFD    = 11U,
+        GreenHighContrast = 12U,
     };
 
     LCDisplay(VirtualJVProcessor&);
@@ -70,7 +71,7 @@ private:
     };
 
     RedrawTimer redrawTimer;
-    Color lcdColor;
+    Color lcdColor = Color::Green;
     juce::Image lcdImage; // owned/reused across paint() calls (Alan's report, 2026-09-08: DSP
                            // Load regression) instead of allocating a fresh 820x100 ARGB image
                            // from scratch 25x/second.

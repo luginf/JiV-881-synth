@@ -27,7 +27,7 @@ namespace {
 // makeup gain. 1.5x is a starting estimate (this session has no working audio output to verify
 // against a reference by ear) - the Settings tab's Master Volume slider stacks on top of it as
 // a pure attenuator, so if this still isn't enough Alan can say so and it can be raised further.
-constexpr float kOutputMakeupGain = 1.5f;
+constexpr float kOutputMakeupGain = 1.5f; // applied only when the "Volume boost" extra feature is on (GitHub issue #17)
 
 // Base app-data directory for everything this build stores here (settings, saved patches,
 // performances - ROMs are resolved separately in rom.cpp with the same logic, keep both in sync).
@@ -246,6 +246,24 @@ void savePersistedExtraPolyphony(bool enabled) {
   iniUpdate({{"audio", "extra_polyphony", enabled ? "1" : "0"}});
 }
 
+// Volume boost (GitHub issue #17): the 1.5x post-synthesis gain, off by default (original level, no clipping).
+bool loadPersistedVolumeBoost() {
+  return iniGet(readIni(), "audio", "volume_boost", "0").getIntValue() != 0;
+}
+
+void savePersistedVolumeBoost(bool enabled) {
+  iniUpdate({{"audio", "volume_boost", enabled ? "1" : "0"}});
+}
+
+// Global LCD colour (GitHub issue #17): a new instance / a project saved without it starts with the last choice.
+int loadPersistedLcdColor() {
+  return iniGet(readIni(), "display", "lcd_color", "0").getIntValue();
+}
+
+void savePersistedLcdColor(int color) {
+  iniUpdate({{"display", "lcd_color", juce::String(color).toStdString()}});
+}
+
 // Whether the plugin's "Part n" output buses start enabled (GitHub issue #3). Read when the plugin is created, so a
 // change only applies to instances created afterwards.
 bool loadPersistedMultiOut() {
@@ -414,6 +432,7 @@ VirtualJVProcessor::VirtualJVProcessor()
         favoriteKeys.insert(l);
   }
   displayMode = loadPersistedDisplayMode();
+  responsivePanel = iniGet(readIni(), "display", "responsive_panel", "0").getIntValue() != 0;
 
   ownedNames.reserve(52);
 
@@ -450,6 +469,8 @@ VirtualJVProcessor::VirtualJVProcessor()
   }
 
   extraPolyphony = loadPersistedExtraPolyphony();
+  volumeBoost = loadPersistedVolumeBoost();
+  status.selectedLCDColor = (uint8_t)loadPersistedLcdColor();
   mainFullMix = loadPersistedMainFullMix();
   outputMode = loadPersistedOutputMode();
 
@@ -2023,6 +2044,14 @@ bool VirtualJVProcessor::retryLoadRoms() {
   return true;
 }
 
+void VirtualJVProcessor::setResponsivePanel(bool enabled) {
+  responsivePanel = enabled;
+  iniUpdate({{"display", "responsive_panel", enabled ? "1" : "0"}});
+  if (auto editor = safeActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->resized();
+}
+
 void VirtualJVProcessor::setDisplayMode(DisplayMode mode) {
   displayMode = mode;
   savePersistedDisplayMode(mode);
@@ -2377,6 +2406,22 @@ int VirtualJVProcessor::getCurrentProgram() {
 }
 
 void VirtualJVProcessor::servicePendingPatch(int numFrames) {
+  // The app says "Performance" but the firmware is in Patch mode (LED PATCH lit, Patch Play on the LCD): the mode
+  // byte sent right after an engine reset (startup, state restore, expansion swap) is lost while the firmware
+  // boots. Send mode + Common + Parts again once the mismatch has lasted half a second (a few tries at most).
+  if (!performanceModeEnabled || mcu->nvram[0x11] == 0 || pendingPatchFrames > 0) {
+    perfMismatchFrames = 0;
+    if (!performanceModeEnabled)
+      perfResyncTries = 0;
+  } else if (perfResyncTries < 5 && (perfMismatchFrames += numFrames) > 44100 / 2) {
+    perfMismatchFrames = 0;
+    perfResyncTries++;
+    uint8_t modeByte = 0;
+    sendSysexBlock(0, &modeByte, 1);
+    pushPerformanceCommonToEngine();
+    for (int i = 0; i < kNumPerformanceParts; ++i)
+      pushPerformancePartToEngine(i);
+  }
   if (pendingPatchFrames <= 0)
     return;
   pendingPatchFrames -= numFrames;
@@ -3274,6 +3319,16 @@ void VirtualJVProcessor::setAudioInput(bool enabled) { savePersistedAudioInput(e
 
 void VirtualJVProcessor::setMultiOutBuses(bool enabled) { savePersistedMultiOut(enabled); }
 
+void VirtualJVProcessor::setVolumeBoost(bool enabled) {
+  volumeBoost = enabled;
+  savePersistedVolumeBoost(enabled);
+}
+
+void VirtualJVProcessor::setGlobalLcdColor(int color) {
+  status.selectedLCDColor = (uint8_t)color;
+  savePersistedLcdColor(color);
+}
+
 void VirtualJVProcessor::setExtraPolyphony(bool enabled) {
   if (enabled == extraPolyphony)
     return;
@@ -3980,7 +4035,7 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 
   mcuLock.exit();
 
-  buffer.applyGain(kOutputMakeupGain * masterVolume);
+  buffer.applyGain((volumeBoost ? kOutputMakeupGain : 1.0f) * masterVolume);
 }
 
 //==============================================================================
@@ -4014,7 +4069,9 @@ void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
   // past its end straight into `status` - keep whatever is currently loaded instead.
   if (data == nullptr || sizeInBytes < static_cast<int>(sizeof(DataToSave)))
     return;
+  const uint8_t globalLcdColor = status.selectedLCDColor; // the LCD colour is a global preference, not a project one
   memcpy(&status, data, sizeof(DataToSave));
+  status.selectedLCDColor = globalLcdColor;
   if (sizeInBytes >= static_cast<int>(sizeof(DataToSave)) + 8) {
     const auto *tail = static_cast<const uint8_t *>(data) + sizeof(DataToSave);
     if (std::memcmp(tail, "MVOL", 4) == 0) {

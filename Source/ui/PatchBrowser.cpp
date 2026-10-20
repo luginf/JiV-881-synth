@@ -83,6 +83,9 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
   searchBox.setTextToShowWhenEmpty("Search presets in all banks and expansions...", juce::Colours::grey);
   searchBox.onTextChange = [this] { updateSearch(); };
   searchBox.onEscapeKey = [this] { searchBox.clear(); updateSearch(); };
+  addChildComponent(clearSearchButton);
+  clearSearchButton.setTooltip("Clear the search and go back to the banks");
+  clearSearchButton.onClick = [this] { searchBox.clear(); updateSearch(); };
   addAndMakeVisible(favoritesButton);
   favoritesButton.setTooltip("Show only favorite patches (click the star at the end of a row to add or remove one)");
   favoritesButton.onClick = [this] { updateSearch(); };
@@ -150,6 +153,7 @@ void PatchBrowser::updateSearch()
   searchListBox.updateContent();
   searchListBox.deselectAllRows();
   searchListBox.setVisible(active);
+  clearSearchButton.setVisible(query.isNotEmpty());
   categoriesListBox.setVisible(!active);
   for (int i = 0; i < maxColumnsPool; i++)
     patchesListBoxes[i]->setVisible(!active && i < activeColumns);
@@ -449,7 +453,9 @@ void PatchBrowser::resized()
 
   const int listsH = getHeight() - topBarH;
   favoritesButton.setBounds(getWidth() - 430 - 76, 2, 70, topBarH - 4);
-  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 76 - 12), topBarH - 4);
+  const int clearW = topBarH - 4;
+  searchBox.setBounds(4, 2, juce::jmax(100, getWidth() - 430 - 76 - 12 - clearW - 4), topBarH - 4);
+  clearSearchButton.setBounds(searchBox.getRight() + 4, 2, clearW, topBarH - 4);
   searchListBox.setBounds(0, topBarH, getWidth(), listsH);
   categoriesListBox.setBounds(0, topBarH, 180, listsH);
 

@@ -884,7 +884,8 @@ void EditToneTab::resized()
 {
     const auto top = 10;
     const auto sliderLeft1 = 100;
-    const auto width = getWidth() / 3 - sliderLeft1 - 10;
+    // Wider window (GitHub issue #9): the controls keep their size and the gaps between the column groups grow instead.
+    const auto width = juce::jmin(getWidth() / 3 - sliderLeft1 - 10, 230);
     const auto halfWidth = width / 2;
     const auto sliderLeft2 = sliderLeft1 + getWidth() / 3 + 2;
     const auto sliderLeft3 = sliderLeft2 + getWidth() / 3;
@@ -1019,7 +1020,7 @@ void EditToneTab::resized()
     // free space under the third column: three envelope sketches sharing it
     const auto gx = sliderLeft3 - 90;
     const auto gy = top + height * 16 + vMargin * 1 + 8;
-    const auto gw = getWidth() - gx - 14;
+    const auto gw = juce::jmin(getWidth() - gx - 14, 260);
     const auto gh = (top + height * 21 + vMargin * 6 - 8 - gy - 2 * 6) / 3; // stops above the EXP rows
     penvGraph.setBounds(gx, gy, gw, gh);
     fenvGraph.setBounds(gx, gy + gh + 6, gw, gh);

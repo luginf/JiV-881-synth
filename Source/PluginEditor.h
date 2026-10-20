@@ -58,6 +58,7 @@ public:
     // Settings-tab display-mode choice changes - swaps which of lcd/panelDisplay is visible and
     // re-lays-out the top strip. See resized()'s own comment for the actual mode logic.
     void refreshDisplayMode();
+    void paintOverChildren(juce::Graphics &g) override;
 
     // Called by VirtualJVProcessor::setSequencerEnabled() (Alan's request, 2026-09-09) whenever
     // the Settings-tab sequencer toggle changes - creates/destroys the drawer (see
@@ -87,7 +88,7 @@ private:
     // "natural" size (matching what the tabs area has always been) inside its own Viewport, and
     // window resizing just clips/scrolls around it instead. Browse (PatchBrowser) needs none of
     // this: its juce::ListBoxes already scroll internally at whatever size they're given.
-    static constexpr int kTabAreaW = 820;
+    static constexpr int kTabAreaW = 1030; // minimum width of the tabs area (was 820 before v1.6.1)
     static constexpr int kTabAreaH = 800;
     static constexpr int kPerformanceTabH = 1000;
 

@@ -27,7 +27,6 @@ LCDisplay::LCDisplay(VirtualJVProcessor &p) : redrawTimer(this), processor(p)
 
 LCDisplay::~LCDisplay()
 {
-    processor.status.selectedLCDColor = (uint8_t)lcdColor;
 }
 
 void LCDisplay::paint(juce::Graphics &g)
@@ -69,6 +68,11 @@ void LCDisplay::setLCDColor(const Color color)
         processor.mcu->lcd.lcd_bg = 0x03be51;
         processor.mcu->lcd.lcd_col1 = 0x103000;
         processor.mcu->lcd.lcd_col2 = 0x08aa45;
+        break;
+    case Color::GreenHighContrast: // the original plugin's yellower, higher contrast green (GitHub issue #17)
+        processor.mcu->lcd.lcd_bg = 0x03be51;
+        processor.mcu->lcd.lcd_col1 = 0x000000;
+        processor.mcu->lcd.lcd_col2 = 0x7cb500;
         break;
     case Color::Amber:
         processor.mcu->lcd.lcd_bg = 0xbe9f03;
@@ -128,7 +132,7 @@ void LCDisplay::setLCDColor(const Color color)
     };
 
     lcdColor = color;
-    processor.status.selectedLCDColor = (uint8_t)lcdColor;
+    processor.setGlobalLcdColor((int)lcdColor);
 }
 
 void LCDisplay::mouseDown(const juce::MouseEvent& e)
@@ -161,11 +165,11 @@ void LCDisplay::addColorSubmenu(juce::PopupMenu &parent)
     auto menu = juce::PopupMenu();
 
     addItem(menu, "Green", Color::Green);
+    addItem(menu, "Green alt", Color::GreenHighContrast);
     addItem(menu, "Amber", Color::Amber);
     addItem(menu, "Red", Color::Red);
     addItem(menu, "Blue", Color::Blue);
     addItem(menu, "White-Black", Color::WhiteBlack);
-    addItem(menu, "White-Blue", Color::WhiteBlue);
     addItem(menu, "Black-White", Color::BlackWhite);
     addItem(menu, "Black-Amber", Color::BlackAmber);
     addItem(menu, "Black-Red", Color::BlackRed);

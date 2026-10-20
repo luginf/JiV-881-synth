@@ -453,6 +453,10 @@ bool PanelSkin::rebuildLcdImage()
 
     juce::Graphics g(lcdImage);
     lcdGlass = pixelAt(0, 0); // glass (lcd_bg)
+    // "Green alt": the panel's LCD opening is filled with the unlit-dot colour (yellow-green, as in the
+    // original plugin) instead of the darker green gap colour, which stays the look of the LCD-only strip.
+    if (processor.status.selectedLCDColor == (uint8_t)LCDisplay::Color::GreenHighContrast)
+        lcdGlass = juce::Colour(unlit).withAlpha(1.0f);
     g.fillAll(lcdGlass);
     for (int line = 0; line < 2; line++)
         for (int c = 0; c < 24; c++)

@@ -54,6 +54,8 @@ private:
         MultiOut         = 16U,
         DrumOutputs      = 19U,
         AudioInput       = 20U,
+        VolumeBoost      = 21U,
+        ResponsivePanel  = 22U,
         MainFullMix      = 17U,
         OutputMode       = 18U,
     };
@@ -74,6 +76,7 @@ private:
     Button drumOutputsToggle{ DrumOutputs, "Separate drum outputs (reload plugin)" };
     // Standalone only: audio input through the effects (use as a reverb/chorus processor), needs a restart.
     Button audioInputToggle{ AudioInput, "Audio input through effects (restart)" };
+    Button volumeBoostToggle{ VolumeBoost, "Volume boost (+3.5 dB, may clip)" };
     Button extraPolyphonyToggle{ ExtraPolyphony, "Extra polyphony (Performance, 2x CPU)" };
     // Plugin-side output trim, not a real JV-880 hardware/MIDI parameter (the real unit's
     // volume knob is an analog attenuator, nothing SysEx/nvram reaches) - applied as a plain
@@ -119,6 +122,7 @@ private:
     juce::Label displaySectionHeaderLabel;
     juce::Label extraFeaturesHeaderLabel; // optional, non-default features: separate drum outputs, extra polyphony
     juce::ComboBox displayModeCombo;
+    Button responsivePanelToggle{ ResponsivePanel, "Responsive panel" };
 
     // Sequencer on/off (Alan's request, 2026-09-09) - Standalone build only, same runtime
     // gating as audioDeviceSelector above; not even shown as a checkbox in VST3/AU/LV2, since

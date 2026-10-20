@@ -170,17 +170,17 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     // well past that instead of removed outright (setResizeLimits has no "no limit" - some finite
     // bound is required), leaving plenty of headroom beyond even a 1:1 full-panel display.
     setResizable(true, true);
-    setResizeLimits(820, 200, 6000, 4000);
+    setResizeLimits(kTabAreaW, 200, 6000, 4000);
 
     // A plugin window opens inside a host that has its own chrome and often cannot resize it (Ardour's VST3 window
     // opened taller than the screen, with the corner grip off-screen): start much shorter there. The tabs scroll
     // when they do not fit, and the window can still be enlarged.
     const bool isStandalone = processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone;
     // Last size used (GitHub issue #9: "remember plugin scaling"), if any, else the defaults above.
-    if (processor.savedWindowW >= 820 && processor.savedWindowH >= 200)
+    if (processor.savedWindowW >= kTabAreaW && processor.savedWindowH >= 200)
         setSize(juce::jmin(processor.savedWindowW, 6000), juce::jmin(processor.savedWindowH, 4000));
     else
-        setSize(820, (isStandalone ? 900 : 640) + keyboardPaneH + kHandleH);
+        setSize(kTabAreaW, (isStandalone ? 900 : 640) + keyboardPaneH + kHandleH);
     sizeTracking = true;
 
     // ROMs not found (Alan's report, 2026-09-08: this used to be a blocking OS alert dialog and
@@ -412,7 +412,15 @@ void VirtualJVEditor::resized()
     }
 
     tabsHandle.setBounds(0, topAreaH, getWidth(), handleH);
-    tabs.setBounds(0, topAreaH + handleH, 820, tabsH);
+    // Full window width (issue #9): Browse and the tabs' column layouts spread out past the 820 px minimum.
+    const int tabsW = processor.responsivePanel ? getWidth() : kTabAreaW;
+    tabs.setBounds(0, topAreaH + handleH, tabsW, tabsH);
+    for (auto &pair : { std::pair<juce::Viewport *, juce::Component *>{ &performanceViewport, &performanceTab },
+                        { &editCommonViewport, &editCommonTab }, { &editTone1Viewport, &editTone1Tab },
+                        { &editTone2Viewport, &editTone2Tab }, { &editTone3Viewport, &editTone3Tab },
+                        { &editTone4Viewport, &editTone4Tab }, { &editRhythmViewport, &editRhythmTab },
+                        { &settingsViewport, &settingsTab }, { &interfaceViewport, &interfaceTab } })
+        pair.second->setSize(juce::jmax(kTabAreaW, tabsW - pair.first->getScrollBarThickness()), pair.second->getHeight());
     const int keyboardHandleY = topAreaH + handleH + tabsH;
     keyboardHandle.setBounds(0, keyboardHandleY, getWidth(), handleH);
     virtualKeyboard.setBounds(0, keyboardHandleY + handleH, getWidth(), keyboardH);
@@ -425,6 +433,15 @@ void VirtualJVEditor::resized()
     }
     bottomGrip.setVisible(gripH > 0);
     bottomGrip.setBounds(0, y, getWidth(), gripH);
+}
+
+// A thin line at the right edge of the tabs area when it keeps its minimum width in a wider window.
+void VirtualJVEditor::paintOverChildren(juce::Graphics &g)
+{
+    if (processor.responsivePanel || getWidth() <= kTabAreaW || tabsCollapsed)
+        return;
+    g.setColour(juce::Colours::white.withAlpha(0.18f));
+    g.fillRect(kTabAreaW, tabs.getY(), 1, tabs.getHeight());
 }
 
 void VirtualJVEditor::refreshSequencerVisibility()

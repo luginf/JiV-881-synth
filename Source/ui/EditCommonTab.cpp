@@ -216,7 +216,8 @@ void EditCommonTab::resized()
 {
     const auto top = 30;
     const auto sliderLeft1 = 120;
-    const auto width = getWidth() / 2 - sliderLeft1 - 10;
+    // Wider window (GitHub issue #9): the controls keep their size and the gaps between the column groups grow instead.
+    const auto width = juce::jmin(getWidth() / 2 - sliderLeft1 - 10, 320);
     const auto halfWidth = width / 2;
     const auto sliderLeft2 = getWidth() / 2 + sliderLeft1 + 0;
     const auto height = 24;

@@ -188,6 +188,10 @@ public:
     enum class DisplayMode { LcdOnly = 0, PanelCompact = 1, PanelFull = 2 };
     DisplayMode displayMode = DisplayMode::LcdOnly;
     void setDisplayMode(DisplayMode mode);
+    // Settings > Display > "Responsive panel": the tabs follow the window width (otherwise they keep their
+    // minimum width, a line marks their right edge). Persisted in settings.ini ([display] responsive_panel).
+    bool responsivePanel = false;
+    void setResponsivePanel(bool enabled);
 
     struct PatchInfo
     {
@@ -336,6 +340,11 @@ public:
     void setMultiOutBuses(bool enabled);
     bool getExtraPolyphony() const { return extraPolyphony; }
     void setExtraPolyphony(bool enabled);
+    // 1.5x output gain (the former default); off = original level. Persisted in settings.ini.
+    bool getVolumeBoost() const { return volumeBoost; }
+    void setVolumeBoost(bool enabled);
+    // LCD colour chosen by the user, remembered across instances and projects.
+    void setGlobalLcdColor(int color);
     void setPerformanceName(const juce::String &name);
 
     // patchInfos[] index 0..194 only (the ROM-native factory tones/rhythm-sets) - see
@@ -396,6 +405,7 @@ public:
     // `mcu`'s NVRAM and expansion ROM); freed otherwise. About 2x the CPU and 30 MB while alive.
     MCU *mcu2 = nullptr;
     bool extraPolyphony = false;
+    std::atomic<bool> volumeBoost{false};
     unsigned extraNoteToggle = 0;
     std::vector<float> extraScratchL, extraScratchR;
     std::vector<float> extInScratchL, extInScratchR; // host input copied before the in-place render (issue #16)
@@ -636,6 +646,8 @@ private:
     // written and selected through a Program Change once the boot has run (servicePendingPatch(), audio thread).
     std::array<uint8_t, 0x16a> pendingPatch{};
     int pendingPatchFrames = 0; // frames left before it is applied, 0 = nothing pending
+    int perfMismatchFrames = 0; // frames the app flag (Performance) and the firmware mode (Patch) have disagreed
+    int perfResyncTries = 0;    // re-sends attempted for the current mismatch
     void servicePendingPatch(int numFrames); // call with mcuLock held
 public:
     static constexpr int kBootFrames = 2 * 44100; // generous: boot of the emulated firmware is well under 2 s

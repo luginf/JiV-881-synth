@@ -183,6 +183,11 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
     processor.setDisplayMode((VirtualJVProcessor::DisplayMode)(displayModeCombo.getSelectedId() - 1));
   };
 
+  addAndMakeVisible(responsivePanelToggle);
+  responsivePanelToggle.setToggleState(processor.responsivePanel, juce::dontSendNotification);
+  responsivePanelToggle.setTooltip("On: the tabs follow the window width (controls spread out). Off: the tabs keep their minimum width, a line marks their edge.");
+  responsivePanelToggle.addListener(this);
+
   addAndMakeVisible(extraFeaturesHeaderLabel);
   extraFeaturesHeaderLabel.setText("Extra features", juce::dontSendNotification);
   extraFeaturesHeaderLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
@@ -197,6 +202,11 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
                                 "just enable the \"Input\" bus in your DAW. Applies after a restart.");
     audioInputToggle.addListener(this);
   }
+
+  addAndMakeVisible(volumeBoostToggle);
+  volumeBoostToggle.setToggleState(processor.getVolumeBoost(), juce::dontSendNotification);
+  volumeBoostToggle.setTooltip("Raises the output level by 1.5x (the level of v1.5). Off = the original JV-880 level; with the boost on, loud chords can go over 0 dBFS.");
+  volumeBoostToggle.addListener(this);
 
   addAndMakeVisible(extraPolyphonyToggle);
   extraPolyphonyToggle.setToggleState(processor.getExtraPolyphony(), juce::dontSendNotification);
@@ -307,7 +317,7 @@ void SettingsTab::resized()
 {
   const auto top = 10;
   const auto sliderLeft1 = 100;
-  const auto width = getWidth() / 3 - sliderLeft1 - 10;
+  const auto width = juce::jmin(getWidth() / 3 - sliderLeft1 - 10, 230); // wider window: bigger gaps, same controls (issue #9)
   const auto sliderLeft2 = sliderLeft1 + getWidth() / 3 + 2;
   const auto sliderLeft3 = sliderLeft2 + getWidth() / 3;
   const auto height = 24;
@@ -325,6 +335,7 @@ void SettingsTab::resized()
   const auto displaySectionTop = row2Top + height + 20;
   displaySectionHeaderLabel.setBounds(10, displaySectionTop, 200, 22);
   displayModeCombo.setBounds(220, displaySectionTop, 220, 24);
+  responsivePanelToggle.setBounds(10, displaySectionTop + 28, 200, 24);
 
   // Sequencer on/off (Alan's request, 2026-09-09) - same row as Display, right-aligned; only
   // present at all (see the constructor) in a Standalone build.
@@ -337,7 +348,7 @@ void SettingsTab::resized()
 
   // ROM Folder section (Alan's request, 2026-09-08), between Display and Audio/MIDI Settings -
   // see refreshRomSection().
-  const auto romSectionTop = displaySectionTop + 22 + 20;
+  const auto romSectionTop = displaySectionTop + 22 + 20 + 30; // room for the Responsive panel row
   romSectionHeaderLabel.setBounds(10, romSectionTop, 400, 22);
   romStatusLabel.setBounds(10, romSectionTop + 24, 440, 36);
   romPathLabel.setBounds(10, romSectionTop + 62, 440, 20);
@@ -348,6 +359,7 @@ void SettingsTab::resized()
   drumOutputsToggle.setBounds(460, romSectionTop + 46, 340, 24);
   extraPolyphonyToggle.setBounds(460, romSectionTop + 74, 340, 24);
   audioInputToggle.setBounds(460, romSectionTop + 102, 340, 24);
+  volumeBoostToggle.setBounds(460, romSectionTop + 130, 340, 24);
   romBrowseButton.setBounds(10, romSectionTop + 86, 110, 24);
   romResetButton.setBounds(126, romSectionTop + 86, 110, 24);
   romReloadButton.setBounds(242, romSectionTop + 86, 140, 24);
@@ -403,6 +415,12 @@ void SettingsTab::buttonClicked(juce::Button *button)
     break;
   case Chorus:
     processor.sendSysexParamChange(0x05, chorusToggle.getToggleState());
+    break;
+  case ResponsivePanel:
+    processor.setResponsivePanel(responsivePanelToggle.getToggleState());
+    break;
+  case VolumeBoost:
+    processor.setVolumeBoost(volumeBoostToggle.getToggleState());
     break;
   case ExtraPolyphony:
     processor.setExtraPolyphony(extraPolyphonyToggle.getToggleState());

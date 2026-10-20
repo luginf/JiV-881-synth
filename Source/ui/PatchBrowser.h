@@ -339,6 +339,7 @@ public:
   // Name search across every loaded bank and expansion (GitHub issue #8). While the box holds
   // text, the results list covers the category/patch columns; clearing it brings them back.
   juce::TextEditor searchBox;
+  juce::TextButton clearSearchButton { juce::String::fromUTF8("\xC3\x97") }; // multiplication sign: clears the search
   struct SearchResult { int patchIndex; int group; };
   std::vector<SearchResult> searchResults;
 
