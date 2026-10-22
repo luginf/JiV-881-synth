@@ -122,6 +122,7 @@ private:
     juce::Label displaySectionHeaderLabel;
     juce::Label extraFeaturesHeaderLabel; // optional, non-default features: separate drum outputs, extra polyphony
     juce::ComboBox displayModeCombo;
+    juce::ComboBox themeCombo;
     Button responsivePanelToggle{ ResponsivePanel, "Responsive panel" };
 
     // Sequencer on/off (Alan's request, 2026-09-09) - Standalone build only, same runtime

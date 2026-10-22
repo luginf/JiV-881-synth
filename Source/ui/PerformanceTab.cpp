@@ -25,10 +25,11 @@ PerformanceTab::PerformanceTab(VirtualJVProcessor &p) : processor(p)
   nameEditor.onFocusLost = [this] { processor.setPerformanceName(nameEditor.getText()); };
   nameEditor.onReturnKey = [this] { processor.setPerformanceName(nameEditor.getText()); };
 
+  boardHeader.setText("Board", juce::dontSendNotification);
   channelHeader.setText("Channel", juce::dontSendNotification);
   levelHeader.setText("Level", juce::dontSendNotification);
   panHeader.setText("Pan", juce::dontSendNotification);
-  for (auto *header : {&channelHeader, &levelHeader, &panHeader})
+  for (auto *header : {&boardHeader, &channelHeader, &levelHeader, &panHeader})
   {
     header->setJustificationType(juce::Justification::centred);
     addAndMakeVisible(*header);
@@ -60,6 +61,9 @@ PerformanceTab::PerformanceTab(VirtualJVProcessor &p) : processor(p)
     addAndMakeVisible(row.nameLabel);
     row.nameLabel.setText("Part " + juce::String(i + 1) + (isRhythmPart ? " (Rhythm): Empty" : ": Empty"),
                           juce::dontSendNotification);
+
+    addAndMakeVisible(row.boardLabel);
+    row.boardLabel.setJustificationType(juce::Justification::centred);
 
     addAndMakeVisible(row.channelCombo);
     for (int ch = 1; ch <= 16; ch++)
@@ -267,6 +271,26 @@ void PerformanceTab::pushCommonParams()
   processor.applyPerformanceCommon();
 }
 
+// 0xff = ROM-native (880 factory), 0 = RD-500 board, 1..19 = SR-JV80-NN expansion cards.
+static juce::String boardTag(uint8_t expansionI)
+{
+  if (expansionI == 0xff)
+    return "[880fa]";
+  if (expansionI == 0)
+    return "[rd500]";
+  return "[exp" + juce::String(expansionI).paddedLeft('0', 2) + "]";
+}
+
+// White when the Part's board is the one the engine has loaded (or the built-in 880 sounds, which
+// are always there), grey when another external board is loaded and this Part will sound wrong.
+void PerformanceTab::updateBoardColour(int partIndex)
+{
+  const auto &part = processor.performanceParts[(size_t)partIndex];
+  const bool active = part.expansionI == 0xff || part.expansionI == processor.status.currentExpansion;
+  const auto on = jivtheme::isLight() ? juce::Colour(0xff1d2327) : juce::Colours::white;
+  partRows[(size_t)partIndex].boardLabel.setColour(juce::Label::textColourId, active ? on : juce::Colours::grey);
+}
+
 void PerformanceTab::updatePartRowFromState(int partIndex)
 {
   auto &part = processor.performanceParts[(size_t)partIndex];
@@ -276,13 +300,15 @@ void PerformanceTab::updatePartRowFromState(int partIndex)
   juce::String label = "Part " + juce::String(partIndex + 1) + (isRhythmPart ? " (Rhythm): " : ": ")
                       + (part.present ? juce::String(part.name) : "Empty");
   row.nameLabel.setText(label, juce::dontSendNotification);
+  row.boardLabel.setText(part.present ? boardTag(part.expansionI) : juce::String(), juce::dontSendNotification);
+  updateBoardColour(partIndex);
   row.channelCombo.setSelectedId(part.midiChannel, juce::dontSendNotification);
   row.levelSlider.setValue(part.level, juce::dontSendNotification);
   row.panSlider.setValue(part.pan, juce::dontSendNotification);
   row.enabledToggle.setToggleState(part.enabled, juce::dontSendNotification);
   row.editButton.setColour(juce::TextButton::buttonColourId,
                            processor.getEditingPerformancePart() == partIndex ? juce::Colour(0xff42A2C8)
-                                                                              : juce::Colour(0xff323e44));
+                                                                              : jivtheme::buttonIdle());
   row.editButton.setEnabled(part.present);
 
   auto &d = detailRows[(size_t)partIndex];
@@ -301,6 +327,9 @@ void PerformanceTab::timerCallback()
 {
   if (isShowing() && processor.pollPerformanceFromFirmware())
     refreshFromProcessor();
+  else if (isShowing())
+    for (int i = 0; i < VirtualJVProcessor::kNumPerformanceParts; i++)
+      updateBoardColour(i);
 }
 
 void PerformanceTab::refreshFromProcessor()
@@ -340,10 +369,12 @@ void PerformanceTab::resized()
   nameEditor.setBounds(margin + 270 + 130 + 6, y, 160, 24);
   y += 24 + margin;
 
-  const int nameW = 220, comboW = 80, sliderW = 120, toggleW = 50, clearW = 70;
+  const int nameW = 220, boardW = 64, comboW = 80, sliderW = 120, toggleW = 50, clearW = 70;
   const int colGap = 10;
 
   int headerX = margin + nameW + colGap;
+  boardHeader.setBounds(headerX, y, boardW, 18);
+  headerX += boardW + colGap;
   channelHeader.setBounds(headerX, y, comboW, 18);
   headerX += comboW + colGap;
   levelHeader.setBounds(headerX, y, sliderW, 18);
@@ -359,6 +390,8 @@ void PerformanceTab::resized()
     int x = margin;
     row.nameLabel.setBounds(x, y, nameW, rowH);
     x += nameW + colGap;
+    row.boardLabel.setBounds(x, y, boardW, rowH);
+    x += boardW + colGap;
     row.channelCombo.setBounds(x, y + 2, comboW, rowH - 4);
     x += comboW + colGap;
     row.levelSlider.setBounds(x, y + 2, sliderW, rowH - 4);
@@ -463,8 +496,8 @@ int PerformanceTab::BankListModel::getNumRows()
 void PerformanceTab::BankListModel::paintListBoxItem(int rowNumber, juce::Graphics &g, int width,
                                                       int height, bool rowIsSelected)
 {
-  g.fillAll(rowIsSelected ? juce::Colour(0xff42A2C8) : juce::Colour(0xff263238));
-  g.setColour(rowIsSelected ? juce::Colours::black : juce::Colours::white);
+  g.fillAll(rowIsSelected ? jivtheme::listSelected() : jivtheme::listBg());
+  g.setColour(jivtheme::listText(rowIsSelected));
 
   if (rowNumber >= 0 && rowNumber < (int)owner.processor.performanceBank.size())
     g.drawFittedText(owner.processor.performanceBank[(size_t)rowNumber].name, {5, 0, width, height - 2},

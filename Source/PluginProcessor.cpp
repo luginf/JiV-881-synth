@@ -432,6 +432,8 @@ VirtualJVProcessor::VirtualJVProcessor()
         favoriteKeys.insert(l);
   }
   displayMode = loadPersistedDisplayMode();
+  lightMode = iniGet(readIni(), "display", "theme", "dark") == "light";
+  jivtheme::setLight(lightMode);
   responsivePanel = iniGet(readIni(), "display", "responsive_panel", "0").getIntValue() != 0;
 
   ownedNames.reserve(52);
@@ -1567,6 +1569,111 @@ bool VirtualJVProcessor::attemptLoadRoms() {
     exit(0);
   }
 
+  // Expansion board swaps inside a Performance (Alan's report): does Part 2 (exp01) sound the same
+  // after exp02 was loaded for Part 3 and then released again?
+  if (std::getenv("JV880_SELFTEST_EXPSWAP")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        servicePendingPatch((int)blockFrames);
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+      }
+    };
+    double lastZcr = 0;
+    auto note = [&](int part) { // sum of |samples| over the note, a deterministic signature
+      uint8_t on[3] = {(uint8_t)(0x90 | part), 60, 100}, off[3] = {(uint8_t)(0x80 | part), 60, 0};
+      double sum = 0;
+      long zc = 0; float prev = 0; long n = 0;
+      mcu->postMidiSC55(on, 3);
+      for (int done = 0; done < sampleRate * 800 / 1000; done += (int)blockFrames) {
+        servicePendingPatch((int)blockFrames);
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++) {
+          sum += std::abs(l[i]) + std::abs(r[i]);
+          if ((l[i] > 0) != (prev > 0)) zc++;
+          prev = l[i]; n++;
+        }
+      }
+      mcu->postMidiSC55(off, 3);
+      runMs(1500);
+      lastZcr = n ? 1000.0 * (double)zc / (double)n : 0; // crossings per 1000 samples: a crude pitch/timbre fingerprint
+      return sum;
+    };
+    auto show = [&](const char *when) {
+      std::fprintf(stderr, "[expswap]   %s: LCD=\"%.80s\" ramName=\"%.12s\" nvram11=%02x\n", when, (const char *)mcu->lcd.LCD_Data,
+                   (const char *)&mcu->sram[0x206a], mcu->nvram[0x11]);
+    };
+    auto first = [&](int group) { return patchInfoPerGroup[group].empty() ? -1 : patchInfoPerGroup[group][5]->iInList; };
+    const int pFactory = 0, pExp1 = first(2), pExp2 = first(3);
+    std::fprintf(stderr, "[expswap] patches factory=%d exp01=%d exp02=%d\n", pFactory, pExp1, pExp2);
+    runMs(2500);
+    sendPatchToPerformancePart(pFactory, 0);
+    sendPatchToPerformancePart(pExp1, 1);
+    for (int i = 0; i < 3; i++) setPerformancePartParams(i, i + 1, 100, 64, true);
+    setPerformanceModeEnabled(true);
+    runMs(1500);
+    const double ref = note(1);
+    std::fprintf(stderr, "[expswap] ref (Part2 exp01, only exp01 loaded): %.2f zcr %.1f\n", ref, lastZcr);
+    { const double a1 = note(1), z1 = lastZcr, a2 = note(1); std::fprintf(stderr, "[expswap] ref again (noise floor): %.2f zcr %.1f | %.2f zcr %.1f\n", a1, z1, a2, lastZcr); }
+    setPerformanceName("uu");
+    show("before swap");
+    sendPatchToPerformancePart(pExp2, 2);
+    show("0 ms after swap");
+    runMs(200); show("200 ms");
+    runMs(1000); show("1.2 s");
+    runMs(2500); show("3.7 s");
+    { const double a1 = note(1); std::fprintf(stderr, "[expswap] exp02 loaded for Part3, Part2 plays: %.2f zcr %.1f (board=%d)\n", a1, lastZcr, status.currentExpansion); }
+    setPerformancePartParams(2, 3, 100, 64, false);
+    runMs(1500);
+    { const double a1 = note(1); std::fprintf(stderr, "[expswap] Part3 off, reconciled to board %d, Part2 plays: %.2f zcr %.1f\n", status.currentExpansion, a1, lastZcr); }
+    setPerformanceModeEnabled(false);
+    runMs(500);
+    setPerformanceModeEnabled(true);
+    runMs(1500);
+    { const double a1 = note(1); std::fprintf(stderr, "[expswap] after Patch -> Performance toggle, Part2 plays: %.2f zcr %.1f\n", a1, lastZcr); }
+    std::exit(0);
+  }
+
+  // Performance Parts all switched off: does anything still sound?
+  if (std::getenv("JV880_SELFTEST_PARTOFF")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      float peak = 0;
+      for (int done = 0; done < sampleRate * ms / 1000; done += (int)blockFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++)
+          peak = std::max(peak, std::max(std::abs(l[i]), std::abs(r[i])));
+      }
+      return peak;
+    };
+    auto setAll = [&](bool on) { for (int i = 0; i < 4; i++) setPerformancePartParams(i, 1, 100, 64, on); };
+    runMs(2000);
+    for (int i = 0; i < 4; i++) sendPatchToPerformancePart(i * 5, i);
+    setAll(true);
+    setPerformanceModeEnabled(true);
+    runMs(1500);
+    uint8_t on[3] = {0x90, 60, 100}, off[3] = {0x80, 60, 0};
+    mcu->postMidiSC55(on, 3);
+    std::fprintf(stderr, "[partoff] all on, note held: peak=%.4f\n", runMs(600));
+    setAll(false);
+    std::fprintf(stderr, "[partoff] switched off while held: peak=%.4f\n", runMs(600));
+    mcu->postMidiSC55(off, 3);
+    std::fprintf(stderr, "[partoff] note-off sent after switching off, +1.5s: peak=%.4f\n", runMs(1500));
+    std::fprintf(stderr, "[partoff] +4s later: peak=%.4f\n", runMs(4000));
+    mcu->postMidiSC55(on, 3);
+    std::fprintf(stderr, "[partoff] new note while all off: peak=%.4f\n", runMs(800));
+    mcu->postMidiSC55(off, 3);
+    runMs(800);
+    uint8_t allOff[3] = {0xB0, 123, 0};
+    mcu->postMidiSC55(allOff, 3);
+    std::fprintf(stderr, "[partoff] after All Notes Off: peak=%.4f\n", runMs(2000));
+    std::exit(0);
+  }
+
   if (std::getenv("JV880_SELFTEST_PERF3")) {
     const int sampleRate = 44100;
     const unsigned int blockFrames = 512;
@@ -2061,6 +2168,16 @@ void VirtualJVProcessor::setDisplayMode(DisplayMode mode) {
       e->refreshDisplayMode();
 }
 
+void VirtualJVProcessor::setLightMode(bool light) {
+  lightMode = light;
+  jivtheme::setLight(light);
+  iniUpdate({{"display", "theme", light ? "light" : "dark"}});
+
+  if (auto editor = safeActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->refreshTheme();
+}
+
 // --- Sequencer (Standalone only) -----------------------------------------------------------
 
 juce::File VirtualJVProcessor::sequencerStateFile() {
@@ -2406,6 +2523,22 @@ int VirtualJVProcessor::getCurrentProgram() {
 }
 
 void VirtualJVProcessor::servicePendingPatch(int numFrames) {
+  if (perfPushRoundsLeft > 0) {
+    if (!performanceModeEnabled || mcu->nvram[0x11] != 0) {
+      perfPushRoundsLeft = 0;
+    } else if ((perfPushDelayFrames -= numFrames) <= 0) {
+      if (perfPushUnit == 0)
+        pushPerformanceCommonToEngine();
+      else
+        pushPerformancePartToEngine(perfPushUnit - 1);
+      perfPushDelayFrames = 2048;
+      if (++perfPushUnit > kNumPerformanceParts) {
+        perfPushUnit = 0;
+        if (--perfPushRoundsLeft > 0)
+          perfPushDelayFrames = 44100 / 2;
+      }
+    }
+  }
   // The app says "Performance" but the firmware is in Patch mode (LED PATCH lit, Patch Play on the LCD): the mode
   // byte sent right after an engine reset (startup, state restore, expansion swap) is lost while the firmware
   // boots. Send mode + Common + Parts again once the mismatch has lasted half a second (a few tries at most).
@@ -3016,6 +3149,10 @@ void VirtualJVProcessor::injectCustomPatchIntoInternalMemory(int patchInfoIndex,
   if (info.expansionI != 0xff && info.expansionI < NUM_EXPS
       && expansionsDescr[info.expansionI] != nullptr) {
     memcpy(mcu->pcm.waverom_exp, expansionsDescr[info.expansionI], 0x800000);
+    const bool boardChanged = status.currentExpansion != info.expansionI;
+    status.currentExpansion = info.expansionI; // the Performance tab greys out the other boards
+    if (boardChanged)
+      boardSwapResyncPending = true;
     if (mcu2 != nullptr)
       memcpy(mcu2->pcm.waverom_exp, expansionsDescr[info.expansionI], 0x800000);
   }
@@ -3134,8 +3271,12 @@ void VirtualJVProcessor::sendPatchToPerformancePart(int patchInfoIndex, int part
   memcpy(part.name, info.name, (size_t)n);
   part.name[n] = '\0';
 
-  if (performanceModeEnabled)
+  if (boardSwapResyncPending) {
+    boardSwapResyncPending = false;
+    resyncPerformanceToEngine(true); // a new board was loaded: make the firmware reload every Part
+  } else if (performanceModeEnabled) {
     pushPerformancePartToEngine(partIndex);
+  }
   mcuLock.exit();
 
   // Non-blocking heads-up (Alan's request, 2026-09-08), not a rejection - see PerformancePart::
@@ -3171,6 +3312,45 @@ void VirtualJVProcessor::sendPatchToPerformancePart(int patchInfoIndex, int part
     }
 }
 
+void VirtualJVProcessor::schedulePerformancePush(int rounds, int firstDelayFrames) {
+  perfPushRoundsLeft = rounds;
+  perfPushDelayFrames = firstDelayFrames;
+  perfPushUnit = 0;
+}
+
+void VirtualJVProcessor::resyncPerformanceToEngine(bool cycleMode) {
+  if (!performanceModeEnabled)
+    return;
+  if (cycleMode) {
+    uint8_t patchMode = 1, performMode = 0;
+    sendSysexBlock(0, &patchMode, 1);
+    sendSysexBlock(0, &performMode, 1);
+  }
+  // Paced (see perfPushRoundsLeft): after a mode bounce wait for the firmware to settle, and repeat.
+  schedulePerformancePush(cycleMode ? 3 : 1, cycleMode ? 44100 * 3 / 10 : 0);
+}
+
+void VirtualJVProcessor::reconcilePerformanceExpansion() {
+  if (!performanceModeEnabled)
+    return;
+  int wanted = -1;
+  for (const auto &p : performanceParts) {
+    if (!p.present || !p.enabled || p.expansionI == 0xff)
+      continue;
+    if (p.expansionI == status.currentExpansion)
+      return; // the loaded board is still used by a Part that sounds
+    if (wanted < 0)
+      wanted = p.expansionI;
+  }
+  if (wanted < 0 || wanted >= NUM_EXPS || expansionsDescr[wanted] == nullptr)
+    return;
+  memcpy(mcu->pcm.waverom_exp, expansionsDescr[wanted], 0x800000);
+  if (mcu2 != nullptr)
+    memcpy(mcu2->pcm.waverom_exp, expansionsDescr[wanted], 0x800000);
+  status.currentExpansion = wanted;
+  resyncPerformanceToEngine(true);
+}
+
 void VirtualJVProcessor::clearPerformancePart(int partIndex) {
   if (partIndex < 0 || partIndex >= kNumPerformanceParts)
     return;
@@ -3181,6 +3361,8 @@ void VirtualJVProcessor::clearPerformancePart(int partIndex) {
   mcuLock.enter();
   if (performanceModeEnabled)
     pushPerformancePartToEngine(partIndex);
+  reconcilePerformanceExpansion();
+  resyncPerformanceToEngine(false);
   mcuLock.exit();
 
   savePerformanceSessionState();
@@ -3204,6 +3386,7 @@ void VirtualJVProcessor::setPerformancePartParams(int partIndex, int midiChannel
   mcuLock.enter();
   if (performanceModeEnabled)
     pushPerformancePartToEngine(partIndex);
+  reconcilePerformanceExpansion();
   mcuLock.exit();
 
   savePerformanceSessionState();
@@ -3421,6 +3604,7 @@ void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
     pushPerformanceCommonToEngine();
     for (int i = 0; i < kNumPerformanceParts; ++i)
       pushPerformancePartToEngine(i);
+    schedulePerformancePush(2, 44100 * 3 / 10);
   }
 
   performanceModeEnabled = enabled;
@@ -3521,6 +3705,7 @@ void VirtualJVProcessor::restoreCustomPartData(const uint8_t *bytes, size_t size
       // Same single-expansion rule as injectCustomPatchIntoInternalMemory(): the last board restored wins.
       if (part.expansionI != 0xff && part.expansionI < NUM_EXPS && expansionsDescr[part.expansionI] != nullptr) {
         memcpy(mcu->pcm.waverom_exp, expansionsDescr[part.expansionI], 0x800000);
+        status.currentExpansion = part.expansionI;
         if (mcu2 != nullptr)
           memcpy(mcu2->pcm.waverom_exp, expansionsDescr[part.expansionI], 0x800000);
       }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "../Theme.h"
 
 // Vertical drag reported to the owner, in pixels from the mouse-down position (screen space, so
 // it stays correct while the window itself is being resized under the cursor).
@@ -20,12 +21,12 @@ public:
     void paint(juce::Graphics &g) override
     {
         auto bounds = getLocalBounds();
-        g.setColour(juce::Colour(0xff1a1a1e));
+        g.setColour(jivtheme::handleBg());
         g.fillRect(bounds);
-        g.setColour(juce::Colours::white.withAlpha(0.15f));
+        g.setColour(jivtheme::line(0.15f));
         g.drawRect(bounds, 1);
 
-        g.setColour(juce::Colour(0xff8a8a94));
+        g.setColour(jivtheme::handleText());
         g.setFont(juce::FontOptions(12.0f));
         // U+25BC/25B2 (filled down/up triangle) rather than an image asset - a single glyph
         // is enough to show which way clicking will go.
@@ -93,9 +94,9 @@ public:
     void paint(juce::Graphics &g) override
     {
         auto bounds = getLocalBounds();
-        g.setColour(juce::Colour(0xff1a1a1e));
+        g.setColour(jivtheme::handleBg());
         g.fillRect(bounds);
-        g.setColour(juce::Colour(0xff8a8a94).withAlpha(0.7f));
+        g.setColour(jivtheme::handleText().withAlpha(0.7f));
         const auto c = bounds.getCentre();
         for (int i = -1; i <= 1; ++i)
             g.fillRect(c.x + i * 14 - 4, c.y - 1, 8, 2);

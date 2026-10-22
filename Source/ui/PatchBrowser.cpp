@@ -117,7 +117,7 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
       processor.status.selectedRom = 0;
     }
 
-    categoriesListBox.selectRow(processor.status.selectedRom);
+    categoriesListBox.selectRow(categoryRowForGroup(processor.status.selectedRom));
 
     /* this doesn't seem to work for some reason
     const auto col = processor.status.selectedPatch / currentRowsPerColumn;
@@ -162,18 +162,18 @@ void PatchBrowser::updateSearch()
 
 void PatchBrowser::SearchListModel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected)
 {
-  g.fillAll(selected ? juce::Colour(0xff42A2C8) : juce::Colour(0xff263238));
+  g.fillAll(selected ? jivtheme::listSelected() : jivtheme::listBg());
   if (row < 0 || row >= (int)browser.searchResults.size())
     return;
   const auto &r = browser.searchResults[(size_t)row];
   const auto &info = browser.processor.patchInfos[r.patchIndex];
-  g.setColour(selected ? juce::Colours::black : juce::Colours::white);
+  g.setColour(jivtheme::listText(selected));
   g.drawFittedText(juce::String(info.name, info.nameLength), { 5, 0, width / 2, height - 2 }, juce::Justification::left, 1);
-  g.setColour(selected ? juce::Colours::black : juce::Colours::lightblue);
+  g.setColour(jivtheme::listSubText(selected));
   g.drawFittedText(r.group <= userGroupIndex ? groupNames[r.group] : "", { width / 2, 0, width / 2 - 5 - starZoneW, height - 2 },
                    juce::Justification::left, 1);
   drawFavoriteStar(g, width, height, browser.processor.isFavorite(r.patchIndex), selected);
-  g.setColour(juce::Colours::white.withAlpha(0.4f));
+  g.setColour(jivtheme::line(0.4f));
   g.drawRect(0, height - 1, width, 1);
 }
 
@@ -346,7 +346,7 @@ void PatchBrowser::mouseUp(const juce::MouseEvent &)
 
 PatchBrowser::~PatchBrowser()
 {
-  processor.status.selectedRom = categoriesListBox.getSelectedRow();
+  processor.status.selectedRom = groupForCategoryRow(categoriesListBox.getSelectedRow());
   categoriesListModel.removeChangeListener(this);
 
   for (int i = 0; i < maxColumnsPool; i++)
@@ -475,7 +475,7 @@ void PatchBrowser::reflowPatchColumns()
   if (listsH <= 0 || availableWidth <= 0)
     return;
 
-  const int groupI = categoriesListBox.getSelectedRow();
+  const int groupI = groupForCategoryRow(categoriesListBox.getSelectedRow());
   const int totalItems =
       (processor.loaded && groupI >= 0 && groupI < (int)processor.patchInfoPerGroup.size())
           ? (int)processor.patchInfoPerGroup[groupI].size()

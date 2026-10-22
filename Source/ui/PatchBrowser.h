@@ -13,10 +13,11 @@
 #include "../PluginProcessor.h"
 #include <JuceHeader.h>
 #include "../rom.h"
+#include "Theme.h"
 
 static const char *groupNames[] = {
     "880 Factory",
-    "500 Factory",
+    "RD-500",
     "Exp 01 Pop",
     "Exp 02 Orchestral",
     "Exp 03 Piano",
@@ -41,6 +42,23 @@ static const char *groupNames[] = {
            // bank, so the romInfos-loaded checks below all skip this row.
 };
 
+// The category list shows the groups in a different order than their indices (patchInfoPerGroup,
+// romInfos and status.selectedRom all keep using the group index): RD-500 is not an original
+// JV-880 board, so it is listed right after "Exp Custom" instead of right after "880 Factory".
+inline int groupForCategoryRow(int row)
+{
+  if (row <= 0 || row >= userGroupIndex)
+    return row;
+  return row == NUM_EXPS ? 1 : row + 1;
+}
+
+inline int categoryRowForGroup(int group)
+{
+  if (group <= 0 || group >= userGroupIndex)
+    return group;
+  return group == 1 ? NUM_EXPS : group - 1;
+}
+
 // Fixed pool of ListBoxes PatchBrowser ever allocates - reflowPatchColumns() shows/hides and
 // resizes however many of these (activeColumns, <= this pool size) the current window height
 // and category actually need, rather than a fixed 6x44 grid (Alan's request, 2026-09-07: a
@@ -58,12 +76,12 @@ inline void drawFavoriteStar(juce::Graphics &g, int rowWidth, int rowHeight, boo
   star.addStar({cx, cy}, 5, 2.6f, 5.8f);
   if (favorite)
   {
-    g.setColour(selected ? juce::Colours::black : juce::Colour(0xffffc83d));
+    g.setColour(selected ? juce::Colours::black : jivtheme::starOn());
     g.fillPath(star);
   }
   else
   {
-    g.setColour((selected ? juce::Colours::black : juce::Colours::white).withAlpha(0.25f));
+    g.setColour(selected ? juce::Colours::black.withAlpha(0.25f) : jivtheme::line(0.25f));
     g.strokePath(star, juce::PathStrokeType(1.0f));
   }
 }
@@ -116,12 +134,12 @@ public:
                               public juce::ChangeBroadcaster {
     int getNumRows() override { return userGroupIndex + 1; }
 
-    void paintListBoxItem(int rowNumber, juce::Graphics &g, int width,
+    void paintListBoxItem(int row, juce::Graphics &g, int width,
                           int height, bool rowIsSelected) override {
-      g.fillAll(rowIsSelected ? juce::Colour(0xff42A2C8)
-                              : juce::Colour(0xff263238));
+      const int rowNumber = groupForCategoryRow(row);
+      g.fillAll(rowIsSelected ? jivtheme::listSelected() : jivtheme::listBg());
 
-      g.setColour(rowIsSelected ? juce::Colours::black : juce::Colours::white);
+      g.setColour(jivtheme::listText(rowIsSelected));
 
       if (rowNumber < userGroupIndex && rowNumber > 0)
       {
@@ -136,7 +154,7 @@ public:
                          juce::Justification::left, 1);
       }
 
-      g.setColour(juce::Colours::white.withAlpha(0.4f));
+      g.setColour(jivtheme::line(0.4f));
       g.drawRect(0, height - 1, width, 2);
       g.drawRect(width - 2, 0, width, height);
     }
@@ -188,8 +206,7 @@ public:
 
     void paintListBoxItem(int rowNumber, juce::Graphics &g, int width,
                           int height, bool rowIsSelected) override {
-      g.fillAll(rowIsSelected ? juce::Colour(0xff42A2C8)
-                              : juce::Colour(0xff263238));
+      g.fillAll(rowIsSelected ? jivtheme::listSelected() : jivtheme::listBg());
 
       if (!parent->processor.loaded) {
         return;
@@ -202,8 +219,8 @@ public:
       // on the selection highlight, and that's a stronger enough cue on its own.
       const bool modified = !rowIsSelected && parent->processor.isPatchModified(info->iInList);
       g.setColour(rowIsSelected ? juce::Colours::black
-                  : modified    ? juce::Colour(0xffffb238)
-                                : juce::Colours::white);
+                  : modified    ? jivtheme::listModifiedText()
+                                : jivtheme::listText(false));
 
       juce::String str = juce::String(info->name, info->nameLength);
       g.drawFittedText(str, {5, 0, width - 5 - starZoneW, height - 2},
@@ -211,13 +228,13 @@ public:
 
       drawFavoriteStar(g, width, height, parent->processor.isFavorite(info->iInList), rowIsSelected);
 
-      g.setColour(juce::Colours::white.withAlpha(0.4f));
+      g.setColour(jivtheme::line(0.4f));
       g.drawRect(0, height - 1, width, 1);
     }
 
     void changeListenerCallback(juce::ChangeBroadcaster *source) override {
       if (source == categoriesListModel) {
-        groupI = categoriesListBox->getSelectedRow();
+        groupI = groupForCategoryRow(categoriesListBox->getSelectedRow());
         parent->processor.status.selectedRom = groupI;
         owner->updateContent();
         owner->deselectAllRows();

@@ -22,6 +22,7 @@
 #include <memory>
 #include <JuceHeader.h>
 #include "../PluginProcessor.h"
+#include "Theme.h"
 #include "widgets/Button.h"
 #include "widgets/Slider.h"
 
@@ -50,7 +51,7 @@ private:
     juce::Label nameLabel;
     juce::TextEditor nameEditor;
 
-    juce::Label channelHeader, levelHeader, panHeader;
+    juce::Label boardHeader, channelHeader, levelHeader, panHeader;
     // Toggles every Part's on/off state at once (Alan's request, 2026-09-08) - flips to whatever
     // isn't the current majority state, so one click reliably does something visible instead of
     // getting stuck re-clicking "all on" when they're already mixed.
@@ -59,6 +60,7 @@ private:
     struct PartRow
     {
         juce::Label nameLabel;
+        juce::Label boardLabel; // expansion board the Part's patch comes from, e.g. [exp01]
         juce::ComboBox channelCombo;
         Slider levelSlider{0, 0, 127, 1, 100};
         Slider panSlider{0, 0, 127, 1, 64, true};
@@ -104,6 +106,7 @@ private:
     LabelledSlider reverbLevelCtl, reverbTimeCtl, reverbFeedbackCtl;
     LabelledSlider chorusLevelCtl, chorusDepthCtl, chorusRateCtl, chorusFeedbackCtl;
 
+    void updateBoardColour(int partIndex);
     void pushDetailParams(int partIndex);
     void pushCommonParams();
     bool updatingFromState = false;

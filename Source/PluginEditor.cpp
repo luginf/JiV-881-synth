@@ -31,6 +31,9 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
       editTone1Tab(p, this, 0U), editTone2Tab(p, this, 1U), editTone3Tab(p, this, 2U), editTone4Tab(p, this, 3U), editRhythmTab(p, this),
       settingsTab(p), interfaceTab(p), virtualKeyboard(p)
 {
+    themeLnF.setColourScheme(jivtheme::scheme());
+    setLookAndFeel(&themeLnF);
+
     addAndMakeVisible(lcd);
     addAndMakeVisible(panelDisplay);
     lcd.setVisible(processor.displayMode == VirtualJVProcessor::DisplayMode::LcdOnly);
@@ -231,6 +234,7 @@ void VirtualJVEditor::romsBecameAvailable()
 
 VirtualJVEditor::~VirtualJVEditor()
 {
+    setLookAndFeel(nullptr);
     processor.status.selectedTab = tabs.getCurrentTabIndex();
 }
 
@@ -320,7 +324,7 @@ void VirtualJVEditor::showToneOrRhythmEditTabs(const bool isRhythm)
 
 uint8_t VirtualJVEditor::getSelectedRomIdx()
 {
-    auto idx = patchBrowser.categoriesListBox.getSelectedRow();
+    auto idx = groupForCategoryRow(patchBrowser.categoriesListBox.getSelectedRow());
 
     if (idx <= 0)
     {
@@ -397,7 +401,8 @@ void VirtualJVEditor::resized()
 
     const int topAreaH = topAreaHeight();
     if (processor.displayMode == VirtualJVProcessor::DisplayMode::LcdOnly)
-        lcd.setBounds(0, 0, 820, 100);
+        // Centred in the responsive layout only (issue #18); the fixed layout keeps it left-aligned.
+        lcd.setBounds(processor.responsivePanel ? juce::jmax(0, (getWidth() - 820) / 2) : 0, 0, 820, 100);
     else
         panelDisplay.setBounds(0, 0, getWidth(), topAreaH);
 
@@ -440,7 +445,7 @@ void VirtualJVEditor::paintOverChildren(juce::Graphics &g)
 {
     if (processor.responsivePanel || getWidth() <= kTabAreaW || tabsCollapsed)
         return;
-    g.setColour(juce::Colours::white.withAlpha(0.18f));
+    g.setColour(jivtheme::line(0.18f));
     g.fillRect(kTabAreaW, tabs.getY(), 1, tabs.getHeight());
 }
 
@@ -507,6 +512,30 @@ void VirtualJVEditor::refreshDisplayMode()
     setSelectedTab(processor.status.selectedTab);
 
     resized();
+}
+
+// Plugin builds: the host window shows through wherever the editor paints nothing (black in
+// Reaper), unlike the Standalone window which fills its own background. Paint it ourselves.
+void VirtualJVEditor::paint(juce::Graphics &g)
+{
+    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+}
+
+void VirtualJVEditor::refreshTheme()
+{
+    themeLnF.setColourScheme(jivtheme::scheme());
+    SliderLookAndFeel::applyThemeToAll();
+    // Tab backgrounds were captured from the look-and-feel when they were added: rebuild.
+    tabsConfiguredForRhythm = -1;
+    if (processor.loaded)
+    {
+        showToneOrRhythmEditTabs(processor.status.isDrums);
+        setSelectedTab(processor.status.selectedTab);
+    }
+    else
+        showRomSetupOnly();
+    sendLookAndFeelChange();
+    repaint();
 }
 
 void VirtualJVEditor::parentHierarchyChanged()

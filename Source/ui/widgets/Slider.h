@@ -2,11 +2,34 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <algorithm>
+#include <vector>
+#include "../Theme.h"
 
 class SliderLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    SliderLookAndFeel() {};
+    SliderLookAndFeel()
+    {
+        setColourScheme(jivtheme::scheme());
+        instances().push_back(this);
+    }
+    ~SliderLookAndFeel() override
+    {
+        auto& v = instances();
+        v.erase(std::remove(v.begin(), v.end(), this), v.end());
+    }
+
+    // Every live slider look-and-feel, so a theme change can restyle them all at once.
+    static std::vector<SliderLookAndFeel*>& instances()
+    {
+        static std::vector<SliderLookAndFeel*> list;
+        return list;
+    }
+    static void applyThemeToAll()
+    {
+        for (auto* l : instances())
+            l->setColourScheme(jivtheme::scheme());
+    }
 
     void setBipolar(bool b) { bipolar = b; };
     void setInvert(bool i) { invert = i; };

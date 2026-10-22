@@ -188,6 +188,9 @@ public:
     enum class DisplayMode { LcdOnly = 0, PanelCompact = 1, PanelFull = 2 };
     DisplayMode displayMode = DisplayMode::LcdOnly;
     void setDisplayMode(DisplayMode mode);
+    // Settings > Display > Theme: false = dark (default), true = light. Persisted in settings.ini ([display] theme).
+    bool lightMode = false;
+    void setLightMode(bool light);
     // Settings > Display > "Responsive panel": the tabs follow the window width (otherwise they keep their
     // minimum width, a line marks their right edge). Persisted in settings.ini ([display] responsive_panel).
     bool responsivePanel = false;
@@ -312,6 +315,16 @@ public:
 
     void sendPatchToPerformancePart(int patchInfoIndex, int partIndex);
     void clearPerformancePart(int partIndex);
+    // Makes the engine's loaded expansion board match the Parts that can actually sound: when the
+    // active board is no longer used by any enabled Part (cleared or switched off), loads the board
+    // of another enabled Part instead. Call with mcuLock held.
+    void reconcilePerformanceExpansion();
+    // Re-sends the whole Performance (Common incl. name, all 8 Parts) so the firmware cannot keep
+    // stale Parts of a Performance of its own. cycleMode also bounces the Patch/Performance mode
+    // byte like the front-panel toggle does, which makes the firmware reload every Part's tone
+    // (needed after another expansion board was loaded). Call with mcuLock held.
+    void resyncPerformanceToEngine(bool cycleMode);
+    bool boardSwapResyncPending = false; // set when injecting a patch loaded another expansion board
     void setPerformancePartParams(int partIndex, int midiChannel, int level, int pan, bool enabled);
     void setPerformanceModeEnabled(bool enabled);
     // "Part n" output buses on by default in plugin formats (GitHub issue #3); takes effect for plugin
@@ -646,6 +659,14 @@ private:
     // written and selected through a Program Change once the boot has run (servicePendingPatch(), audio thread).
     std::array<uint8_t, 0x16a> pendingPatch{};
     int pendingPatchFrames = 0; // frames left before it is applied, 0 = nothing pending
+    // Paced re-push of the Performance (Common, then Part 1..8, one record every ~45 ms of audio): sending it
+    // all at once overflows the firmware's MIDI buffer ("MIDI:Buffer full" on the LCD) and the tail is lost.
+    // The firmware also loads one of ITS OWN stored Performances (LCD "I-01:Syn Lead") some time after the
+    // mode byte, over what was sent, hence the rounds repeated later. schedulePerformancePush() arms it.
+    int perfPushRoundsLeft = 0;
+    int perfPushDelayFrames = 0;
+    int perfPushUnit = 0; // 0 = Common, 1..8 = Part 1..8
+    void schedulePerformancePush(int rounds, int firstDelayFrames);
     int perfMismatchFrames = 0; // frames the app flag (Performance) and the firmware mode (Patch) have disagreed
     int perfResyncTries = 0;    // re-sends attempted for the current mismatch
     void servicePendingPatch(int numFrames); // call with mcuLock held

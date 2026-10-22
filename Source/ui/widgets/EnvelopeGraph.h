@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../Theme.h"
 
 #include <array>
 #include <functional>
@@ -26,12 +27,12 @@ public:
     void paint(juce::Graphics &g) override
     {
         auto area = getLocalBounds().toFloat();
-        g.setColour(juce::Colour(0xff1d2327));
+        g.setColour(jivtheme::plotBg());
         g.fillRoundedRectangle(area, 3.0f);
-        g.setColour(juce::Colour(0xff4a5459));
+        g.setColour(jivtheme::plotBorder());
         g.drawRoundedRectangle(area.reduced(0.5f), 3.0f, 1.0f);
 
-        g.setColour(juce::Colours::lightgrey.withAlpha(0.8f));
+        g.setColour(jivtheme::plotTitle().withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
         g.drawText(title, getLocalBounds().reduced(6, 2), juce::Justification::topLeft, false);
 
@@ -53,7 +54,7 @@ public:
         const float total = widthOf(st[0].time) + widthOf(st[1].time) + widthOf(st[2].time) + sustainW + widthOf(st[3].time);
         const float k = plot.getWidth() / total;
 
-        g.setColour(juce::Colours::white.withAlpha(0.15f));
+        g.setColour(jivtheme::line(0.15f));
         g.drawHorizontalLine((int)yOf(0), plot.getX(), plot.getRight()); // baseline (zero level)
 
         const bool ampLike = !bipolar && endsAtZero;
@@ -81,7 +82,7 @@ public:
         g.strokePath(p, juce::PathStrokeType(1.6f));
 
         // release marker: where the key is let go
-        g.setColour(juce::Colours::white.withAlpha(0.25f));
+        g.setColour(jivtheme::line(0.25f));
         const float dash[] = { 3.0f, 3.0f };
         g.drawDashedLine(juce::Line<float>(sustainEnd, plot.getY(), sustainEnd, plot.getBottom()), dash, 2);
     }

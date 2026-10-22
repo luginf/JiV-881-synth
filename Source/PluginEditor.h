@@ -58,6 +58,9 @@ public:
     // Settings-tab display-mode choice changes - swaps which of lcd/panelDisplay is visible and
     // re-lays-out the top strip. See resized()'s own comment for the actual mode logic.
     void refreshDisplayMode();
+    // Applies jivtheme (dark/light) to this editor and everything in it.
+    void refreshTheme();
+    void paint(juce::Graphics &g) override;
     void paintOverChildren(juce::Graphics &g) override;
 
     // Called by VirtualJVProcessor::setSequencerEnabled() (Alan's request, 2026-09-09) whenever
@@ -80,6 +83,9 @@ public:
     void setLCDColor(const LCDisplay::Color color) { lcd.setLCDColor(color); }
 
 private:
+    // Dark/light colour scheme for every stock widget below (Settings > Display > Theme); also
+    // the source of the editor's own background, see paint(). Declared first so it outlives them.
+    juce::LookAndFeel_V4 themeLnF;
     bool sizeTracking = false; // set once the constructor has chosen the initial size
     int sizeSaveToken = 0;
     // The Common/Tone/Rhythm/Settings tabs lay themselves out with fixed pixel row positions

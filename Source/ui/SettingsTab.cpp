@@ -130,7 +130,7 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   addAndMakeVisible(romStatusLabel);
   addAndMakeVisible(romPathLabel);
   romPathLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
-  romPathLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+  romPathLabel.setColour(juce::Label::textColourId, jivtheme::mutedText());
 
   addAndMakeVisible(romBrowseButton);
   romBrowseButton.onClick = [this]
@@ -182,6 +182,12 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   {
     processor.setDisplayMode((VirtualJVProcessor::DisplayMode)(displayModeCombo.getSelectedId() - 1));
   };
+
+  addAndMakeVisible(themeCombo);
+  themeCombo.addItem("Dark mode", 1);
+  themeCombo.addItem("Light mode", 2);
+  themeCombo.setSelectedId(processor.lightMode ? 2 : 1, juce::dontSendNotification);
+  themeCombo.onChange = [this] { processor.setLightMode(themeCombo.getSelectedId() == 2); };
 
   addAndMakeVisible(responsivePanelToggle);
   responsivePanelToggle.setToggleState(processor.responsivePanel, juce::dontSendNotification);
@@ -297,7 +303,7 @@ void SettingsTab::refreshRomSection()
   if (processor.loaded)
   {
     romStatusLabel.setText("ROMs loaded.", juce::dontSendNotification);
-    romStatusLabel.setColour(juce::Label::textColourId, juce::Colours::lightgreen);
+    romStatusLabel.setColour(juce::Label::textColourId, jivtheme::okText());
     romReloadButton.setEnabled(false);
   }
   else
@@ -306,7 +312,7 @@ void SettingsTab::refreshRomSection()
         "ROM files not found here. Copy your JV-880 ROM dump into this folder (or pick a "
         "different one below), then click Reload ROMs.",
         juce::dontSendNotification);
-    romStatusLabel.setColour(juce::Label::textColourId, juce::Colours::orange);
+    romStatusLabel.setColour(juce::Label::textColourId, jivtheme::warnText());
     romReloadButton.setEnabled(true);
   }
   romPathLabel.setText(VirtualJVProcessor::getRomsFolder().getFullPathName(),
@@ -335,6 +341,7 @@ void SettingsTab::resized()
   const auto displaySectionTop = row2Top + height + 20;
   displaySectionHeaderLabel.setBounds(10, displaySectionTop, 200, 22);
   displayModeCombo.setBounds(220, displaySectionTop, 220, 24);
+  themeCombo.setBounds(220, displaySectionTop + 28, 220, 24);
   responsivePanelToggle.setBounds(10, displaySectionTop + 28, 200, 24);
 
   // Sequencer on/off (Alan's request, 2026-09-09) - same row as Display, right-aligned; only
