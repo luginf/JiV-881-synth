@@ -1119,6 +1119,13 @@ bool VirtualJVProcessor::attemptLoadRoms() {
 
   loaded = true;
 
+  // GitHub issue #21: right after the first boot the LCD shows the stored Internal 01 name while the sound engine
+  // can still hold another patch. Re-apply slot 0 + a Program Change once the boot has run, as an expansion swap does.
+  if (mcu->nvram[0x11] == 1) {
+    memcpy(pendingPatch.data(), &mcu->nvram[0x0d70], 0x16a);
+    pendingPatchFrames = kBootFrames;
+  }
+
   loadPerformanceSessionState();
 
   // GitHub issue #7: extra polyphony. Plays a 14-note chord of a sustained patch through the real
@@ -4287,6 +4294,13 @@ void VirtualJVProcessor::setStateInformation(const void *data, int sizeInBytes)
   memcpy(&mcu->nvram[0x67f0], status.drums, 0xa7c);
   memcpy(&mcu->nvram[0x0d70], status.patch, 0x16a);
   mcu->SC55_Reset();
+  // GitHub issue #21: same as at startup, select the restored patch once the firmware has booted.
+  if (!status.isDrums) {
+    memcpy(pendingPatch.data(), status.patch, 0x16a);
+    pendingPatchFrames = kBootFrames;
+  } else {
+    pendingPatchFrames = 0;
+  }
   mcuLock.exit();
 
   // GitHub issue #15: the reset above reboots the firmware in Patch mode (nvram[0x11] forced from

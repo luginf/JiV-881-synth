@@ -25,6 +25,8 @@
 #include "AppModeIcons.h"
 #include "ui/PanelSkin.h"
 #include "ui/PatchBrowser.h"
+#include "ui/PerformanceTab.h"
+#include "ui/EditCommonTab.h"
 #include "ui/widgets/VirtualKeyboard.h"
 #include "sequencer/JivSequencerPanel.h"
 #include "sequencer/JivSequencerGridPanel.h"
@@ -202,6 +204,8 @@ public:
 		panelDisplay.setVisible(currentView == View::Keyboard);
 		keyboard.setVisible(currentView == View::Keyboard);
 		patchBrowser->setVisible(currentView == View::Browse);
+		if (performanceViewport) performanceViewport->setVisible(currentView == View::Performance);
+		if (commonViewport) commonViewport->setVisible(currentView == View::Common);
 		// Classic strip, retro LCD or piano roll, per processor.getSequencerRetroMode()/
 		// getSequencerGridMode() (all three exist; only the chosen one is ever shown).
 		const bool pianoRoll = !retroView && processor.getSequencerGridMode();
@@ -212,6 +216,14 @@ public:
 
 		if (currentView == View::Browse) {
 			patchBrowser->setBounds(area);
+		} else if (currentView == View::Performance || currentView == View::Common) {
+			// Fixed-pixel desktop tabs (1030 px wide), scrolled inside a viewport like the desktop editor does.
+			const bool perf = currentView == View::Performance;
+			auto &vp = perf ? *performanceViewport : *commonViewport;
+			vp.setBounds(area);
+			const int w = juce::jmax(kTabW, area.getWidth() - vp.getScrollBarThickness());
+			if (perf) performanceTab->setSize(w, kPerformanceTabH);
+			else commonTab->setSize(w, kCommonTabH);
 		} else if (currentView == View::Sequencer) {
 			sequencerPanel->setBounds(area);
 			sequencerGridPanel->setBounds(area);
@@ -232,7 +244,9 @@ public:
 	}
 
 private:
-	enum class View { Keyboard, Browse, Sequencer };
+	enum class View { Keyboard, Browse, Sequencer, Performance, Common };
+	// Natural size of the desktop tabs (VirtualJVEditor::kTabAreaW/kTabAreaH/kPerformanceTabH, private there).
+	static constexpr int kTabW = 1030, kCommonTabH = 800, kPerformanceTabH = 1000;
 
 	// (Re)creates the two views whose content is only meaningful once ROMs are loaded -
 	// PatchBrowser snapshots processor.patchInfos[] at construction with no live-refresh hook
@@ -267,6 +281,21 @@ private:
 		if (sequencerRetroPanel) removeChildComponent(sequencerRetroPanel.get());
 		sequencerRetroPanel = std::make_unique<JivSequencerRetroPanel>(processor);
 		addChildComponent(*sequencerRetroPanel);
+
+		// The desktop "Performance" and "Common" tabs, reached only from the hamburger menu (not from the
+		// mode button). Recreated with the other patch-dependent views.
+		for (auto *vp : { performanceViewport.get(), commonViewport.get() })
+			if (vp) removeChildComponent(vp);
+		performanceViewport = std::make_unique<juce::Viewport>();
+		commonViewport = std::make_unique<juce::Viewport>();
+		performanceTab = std::make_unique<PerformanceTab>(processor);
+		commonTab = std::make_unique<EditCommonTab>(processor);
+		performanceTab->setSize(kTabW, kPerformanceTabH);
+		commonTab->setSize(kTabW, kCommonTabH);
+		performanceViewport->setViewedComponent(performanceTab.get(), false);
+		commonViewport->setViewedComponent(commonTab.get(), false);
+		addChildComponent(*performanceViewport);
+		addChildComponent(*commonViewport);
 	}
 
 	// Browse view's NOTE (left: plays testNotePitch while pressed), HOLD (sustains it, and
@@ -387,6 +416,11 @@ private:
 		// to stop it once the HOLD button is hidden.
 		if (currentView == View::Browse && holdActive) stopHeldTestNote();
 		currentView = v;
+		if (v == View::Performance && performanceTab) performanceTab->refreshFromProcessor();
+		if (v == View::Common && commonTab) {
+			commonTab->rhythmSetMode(processor.status.isDrums);
+			commonTab->updateValues();
+		}
 		resized();
 	}
 
@@ -527,14 +561,25 @@ private:
 			m.addItem("Retry loading ROMs", [this] { retryRoms(); });
 		m.addSeparator();
 		// The same three views the mode-switch button cycles through, picked directly.
-		for (auto mode : { jivui::AppMode::frontPanel, jivui::AppMode::sequencer, jivui::AppMode::browse })
-			m.addItem(jivui::appModeName(mode), true, currentMode() == mode, [this, mode] { setMode(mode); });
-		// "Sequencer > Classic / Retro / Grid" - the same submenu every front end of the family
-		// offers on right-click (SequencerViewMenu.h).
-		seqview::addSubmenu(m, seqview::current(processor), [this](seqview::View v) {
-			processor.setSequencerView(v);
-			resized();
-		});
+		for (auto mode : { jivui::AppMode::frontPanel, jivui::AppMode::sequencer, jivui::AppMode::browse }) {
+			if (mode == jivui::AppMode::sequencer) {
+				// "Sequencer" opens a submenu: the view itself, then "Sequencer mode > Classic / Retro / Grid"
+				// (SequencerViewMenu.h, the same choice every front end of the family offers).
+				juce::PopupMenu seq;
+				seq.addItem("Open sequencer", true, currentView == View::Sequencer, [this] { setMode(jivui::AppMode::sequencer); });
+				seqview::addSubmenu(seq, seqview::current(processor), [this](seqview::View v) {
+					processor.setSequencerView(v);
+					resized();
+				}, "Sequencer mode");
+				m.addSubMenu(jivui::appModeName(mode), seq, true, nullptr, currentMode() == mode && currentView != View::Performance && currentView != View::Common);
+			} else {
+				m.addItem(jivui::appModeName(mode), true, currentView == (mode == jivui::AppMode::browse ? View::Browse : View::Keyboard),
+				          [this, mode] { setMode(mode); });
+			}
+		}
+		// Desktop tabs with no mode-button shortcut: only reachable from here.
+		m.addItem("Performance", processor.loaded, currentView == View::Performance, [this] { setView(View::Performance); });
+		m.addItem("Common", processor.loaded, currentView == View::Common, [this] { setView(View::Common); });
 		// VirtualKeyboard::showContextMenu() is the exact same channel/remap/PC-keyboard menu
 		// the desktop keyboard's right-click shows - reached here directly instead of
 		// reimplementing it, since there's no right mouse button on a touchscreen.
@@ -607,6 +652,9 @@ private:
 	std::unique_ptr<JivSequencerPanel> sequencerPanel;
 	std::unique_ptr<JivSequencerGridPanel> sequencerGridPanel;
 	std::unique_ptr<JivSequencerRetroPanel> sequencerRetroPanel;
+	std::unique_ptr<juce::Viewport> performanceViewport, commonViewport;
+	std::unique_ptr<PerformanceTab> performanceTab;
+	std::unique_ptr<EditCommonTab> commonTab;
 
 	jivui::HamburgerButton menuButton;
 	jivui::ModeButton modeButton;

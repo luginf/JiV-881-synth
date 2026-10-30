@@ -885,10 +885,13 @@ void EditToneTab::resized()
     const auto top = 10;
     const auto sliderLeft1 = 100;
     // Wider window (GitHub issue #9): the controls keep their size and the gaps between the column groups grow instead.
-    const auto width = juce::jmin(getWidth() / 3 - sliderLeft1 - 10, 230);
-    const auto halfWidth = width / 2;
+    // Safety margin (issue #20): keep the last column off the Viewport's scroll bar so a mouse-wheel scroll
+    // near the edge cannot land on a slider.
+    const auto rightPad = 24;
     const auto sliderLeft2 = sliderLeft1 + getWidth() / 3 + 2;
     const auto sliderLeft3 = sliderLeft2 + getWidth() / 3;
+    const auto width = juce::jmin(juce::jmin(getWidth() / 3 - sliderLeft1 - 10, 230), getWidth() - rightPad - sliderLeft3);
+    const auto halfWidth = width / 2;
     const auto height = 24;
     const auto vMargin = 24;
 
